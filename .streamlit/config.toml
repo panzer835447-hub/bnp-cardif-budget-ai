@@ -1,0 +1,48 @@
+[client]
+toolbarMode = "viewer"
+showErrorDetails = "none"
+showErrorLinks = false
+
+[theme]
+base = "dark"
+baseRadius = "10px"
+showWidgetBorder = true
+showSidebarBorder = true
+
+[theme.dark]
+primaryColor = "#4f9cf9"
+backgroundColor = "#070d1a"
+secondaryBackgroundColor = "#132039"
+textColor = "#e7eefa"
+borderColor = "#1d2c47"
+dataframeBorderColor = "#1d2c47"
+dataframeHeaderBackgroundColor = "#132039"
+redColor = "#f26b6b"
+orangeColor = "#f0a63a"
+blueColor = "#5b9cf0"
+greenColor = "#3fbf7f"
+grayColor = "#93a3b8"
+
+[theme.dark.sidebar]
+backgroundColor = "#0b1424"
+secondaryBackgroundColor = "#132039"
+borderColor = "#1d2c47"
+
+[theme.light]
+primaryColor = "#2563eb"
+backgroundColor = "#f3f6fb"
+secondaryBackgroundColor = "#eef2f7"
+textColor = "#172133"
+borderColor = "#e1e6ee"
+dataframeBorderColor = "#e1e6ee"
+dataframeHeaderBackgroundColor = "#f6f8fb"
+redColor = "#d63c3c"
+orangeColor = "#c97a10"
+blueColor = "#2f6fd0"
+greenColor = "#1f9a5c"
+grayColor = "#5f6e84"
+
+[theme.light.sidebar]
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f6f8fb"
+borderColor = "#e1e6ee"
