@@ -2,6 +2,7 @@ import itertools
 import json
 import math
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -15,7 +16,7 @@ import streamlit as st
 # ==========================================
 st.set_page_config(
     page_title="法巴人壽 | AI 預算預測與差異分析助手",
-    page_icon="📊",
+    page_icon=":material/monitoring:",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -61,7 +62,6 @@ def show_dept(name):
 
 STATUS_ORDER = ["高風險超支", "需注意", "執行落後", "預算正常"]
 STATUS_SEVERITY = {status: i for i, status in enumerate(STATUS_ORDER)}
-STATUS_EMOJI = {"高風險超支": "🔴", "需注意": "🟠", "執行落後": "🔵", "預算正常": "🟢"}
 
 def show_status(status):
     pairs = {
@@ -70,21 +70,22 @@ def show_status(status):
     }
     return pairs.get(status, status) if IS_EN else status
 
-BG = "#070d1a" if IS_DARK else "#f3f6fb"
-PANEL = "#0e1729" if IS_DARK else "#ffffff"
-RAISED = "#132039" if IS_DARK else "#f6f8fc"
-BORDER = "#1d2c47" if IS_DARK else "#dfe5ef"
-TEXT = "#e7eefa" if IS_DARK else "#14203a"
-MUTED = "#8b9bb4" if IS_DARK else "#5d6b82"
-GRID = "#16233b" if IS_DARK else "#edf1f7"
-ACCENT = "#4f9cf9" if IS_DARK else "#2563eb"
-ACCENT2 = "#22d3ee" if IS_DARK else "#0891b2"
-TRACK = "#1c2a44" if IS_DARK else "#e6ebf3"
+# 色彩系統：中性石墨底 + 靛紫品牌色。品牌色刻意避開四種燈號色（紅／琥珀／青／綠），顏色只用來表達狀態。
+BG = "#0b0d12" if IS_DARK else "#f4f5f8"
+PANEL = "#12151c" if IS_DARK else "#ffffff"
+RAISED = "#181c25" if IS_DARK else "#f8f9fb"
+BORDER = "#252a36" if IS_DARK else "#e2e5eb"
+TEXT = "#eceef3" if IS_DARK else "#111827"
+MUTED = "#8e96a6" if IS_DARK else "#5a6272"
+GRID = "#1c2029" if IS_DARK else "#eef0f4"
+ACCENT = "#8b8df9" if IS_DARK else "#4f46e5"
+ACCENT2 = "#b48cf6" if IS_DARK else "#7c3aed"
+TRACK = "#232835" if IS_DARK else "#e8eaef"
 STATUS_COLORS = {
-    "高風險超支": "#f26b6b" if IS_DARK else "#d63c3c",
-    "需注意": "#f0a63a" if IS_DARK else "#c97a10",
-    "執行落後": "#5b9cf0" if IS_DARK else "#2f6fd0",
-    "預算正常": "#3fbf7f" if IS_DARK else "#1f9a5c",
+    "高風險超支": "#f0616d" if IS_DARK else "#d6334a",
+    "需注意": "#f3a83b" if IS_DARK else "#b76a00",
+    "執行落後": "#3cbfe0" if IS_DARK else "#0479a8",
+    "預算正常": "#36c48f" if IS_DARK else "#118a58",
 }
 FONT_STACK = "'Inter', 'Noto Sans TC', 'Microsoft JhengHei', 'PingFang TC', sans-serif"
 
@@ -101,9 +102,8 @@ st.markdown(f"""
 html, body, .stApp, .stApp p, .stApp li, .stApp label, .stApp input, .stApp textarea, .stApp button {{ font-family:{FONT_STACK}; }}
 .stApp {{ color:var(--text); font-variant-numeric:tabular-nums;
           background:
-            radial-gradient(900px 420px at 85% -120px, {rgba(ACCENT, .16 if IS_DARK else .08)}, transparent 70%),
-            radial-gradient(700px 360px at 10% -160px, {rgba(ACCENT2, .10 if IS_DARK else .05)}, transparent 70%),
-            linear-gradient({rgba(BORDER, .35 if IS_DARK else .0)} 1px, transparent 1px) 0 0 / 100% 48px,
+            radial-gradient(1100px 380px at 78% -140px, {rgba(ACCENT, .13 if IS_DARK else .07)}, transparent 70%),
+            radial-gradient(800px 320px at 18% -180px, {rgba(ACCENT2, .08 if IS_DARK else .04)}, transparent 70%),
             var(--bg); background-attachment:fixed; }}
 [data-testid="stHeader"] {{ background:transparent; }}
 [data-testid="stMainBlockContainer"] {{ padding-top:1.4rem; padding-bottom:3rem; max-width:1480px; }}
@@ -112,23 +112,36 @@ h1,h2,h3,h4,h5,p,label,li,[data-testid="stCaptionContainer"] {{ color:var(--text
 hr {{ border-color:var(--border); }}
 
 /* ---------- 側邊欄 ---------- */
-[data-testid="stSidebar"] {{ background:var(--panel); border-right:1px solid var(--border); }}
+[data-testid="stSidebar"] {{ background:{"linear-gradient(180deg,#10131a,#0c0e13)" if IS_DARK else "#ffffff"}; border-right:1px solid var(--border); }}
 [data-testid="stSidebar"] * {{ color:var(--text); }}
-[data-testid="stSidebarUserContent"] {{ padding-top:.4rem; }}
-.sb-brand {{ display:flex; align-items:center; gap:11px; padding:2px 2px 14px; border-bottom:1px solid var(--border); margin-bottom:6px; }}
-.sb-mark {{ width:38px; height:38px; border-radius:11px; display:flex; align-items:center; justify-content:center; background:linear-gradient(140deg,{ACCENT},{ACCENT2}); flex:0 0 38px; box-shadow:0 6px 18px {rgba(ACCENT, .35)}; }}
+[data-testid="stSidebarUserContent"] {{ padding-top:.2rem; }}
+.st-key-theme_sync_slot {{ display:none !important; }}
+.sb-brand {{ display:flex; align-items:center; gap:12px; padding:4px 4px 16px; margin-bottom:4px; }}
+.sb-mark {{ width:40px; height:40px; border-radius:12px; display:flex; align-items:center; justify-content:center; background:linear-gradient(140deg,{ACCENT},{ACCENT2}); flex:0 0 40px; box-shadow:0 8px 22px {rgba(ACCENT, .38)}, inset 0 1px 0 rgba(255,255,255,.25); }}
 .sb-title {{ font-weight:800; font-size:15px; letter-spacing:-.01em; line-height:1.25; }}
-.sb-sub {{ font-size:11px; color:var(--muted) !important; }}
-.sb-label {{ font-size:11px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--muted) !important; margin:14px 0 4px; }}
+.sb-sub {{ font-size:11px; color:var(--muted) !important; margin-top:2px; }}
+.sb-label {{ font-size:10.5px; font-weight:700; letter-spacing:.12em; text-transform:uppercase; color:var(--muted) !important; margin:18px 4px 6px; opacity:.85; }}
+/* 導覽：圖示放進圓角方塊，選中項目左側亮條 + 漸層底；分組標題由 CSS 插入 */
 .st-key-nav_slot [data-testid="stRadio"], .st-key-nav_slot [role="radiogroup"], .st-key-nav_slot [role="radiogroup"] > div {{ width:100%; }}
-.st-key-nav_slot [role="radiogroup"] {{ gap:3px; }}
-.st-key-nav_slot [data-testid="stRadioOption"] {{ width:100%; padding:9px 12px; border-radius:10px; border:1px solid transparent; margin:0; transition:background .15s; cursor:pointer; box-sizing:border-box; }}
-.st-key-nav_slot [data-testid="stRadioOption"]:hover {{ background:var(--raised); }}
+.st-key-nav_slot [role="radiogroup"] {{ gap:2px; }}
+.st-key-nav_slot [data-testid="stRadioOption"] {{ position:relative; width:100%; padding:7px 10px; border-radius:11px; border:1px solid transparent; margin:0; transition:background .15s, border-color .15s; cursor:pointer; box-sizing:border-box; }}
+.st-key-nav_slot [data-testid="stRadioOption"]:hover {{ background:{rgba(TEXT, .05)}; }}
 .st-key-nav_slot [data-testid="stRadioOption"] > div > div:first-child {{ display:none; }}
-.st-key-nav_slot [data-testid="stRadioOption"]:has(input:checked) {{ background:{rgba(ACCENT, .16)}; border-color:{rgba(ACCENT, .38)}; }}
-.st-key-nav_slot [data-testid="stRadioOption"]:has(input:checked) p, .st-key-nav_slot [data-testid="stRadioOption"]:has(input:checked) span {{ color:{ACCENT} !important; }}
-.st-key-nav_slot [data-testid="stRadioOption"] p {{ font-weight:600; font-size:14px; }}
-.st-key-nav_slot [data-testid="stRadioOption"] p span[role="img"] {{ margin-right:8px; font-size:19px; color:var(--muted); }}
+.st-key-nav_slot [data-testid="stRadioOption"]:has(input:checked) {{ background:linear-gradient(90deg,{rgba(ACCENT, .20)},{rgba(ACCENT, .04)}); border-color:{rgba(ACCENT, .28)}; }}
+.st-key-nav_slot [data-testid="stRadioOption"]:has(input:checked)::after {{ content:""; position:absolute; left:-1px; top:9px; bottom:9px; width:3px; border-radius:0 3px 3px 0; background:var(--grad); }}
+.st-key-nav_slot [data-testid="stRadioOption"] p {{ font-weight:600; font-size:14px; display:flex; align-items:center; width:100%; }}
+.st-key-nav_slot [data-testid="stRadioOption"]:has(input:checked) p {{ color:var(--text) !important; font-weight:700; }}
+.st-key-nav_slot [data-testid="stRadioOption"] p span[role="img"] {{ margin-right:11px; font-size:18px; width:32px; height:32px; border-radius:9px; display:inline-flex; align-items:center; justify-content:center;
+    background:{rgba(TEXT, .05)}; border:1px solid var(--border); color:var(--muted) !important; flex:0 0 32px; }}
+.st-key-nav_slot [data-testid="stRadioOption"]:has(input:checked) p span[role="img"] {{ background:var(--grad); border-color:transparent; color:#fff !important; box-shadow:0 6px 16px {rgba(ACCENT, .35)}; }}
+.st-key-nav_slot [data-testid="stRadioOption"] p span[data-testid="stMarkdownBadge"], .st-key-nav_slot [data-testid="stRadioOption"] p span[class*="badge"] {{ margin-left:auto; }}
+.sb-status {{ margin:6px 0 4px; padding:12px 14px; border-radius:14px; border:1px solid var(--border); background:{rgba(TEXT, .03)}; }}
+.sb-status-row {{ display:flex; justify-content:space-between; align-items:center; font-size:12px; color:var(--muted) !important; }}
+.sb-status-row b {{ color:var(--text); font-weight:700; }}
+.sb-progress {{ height:6px; border-radius:999px; background:var(--track); margin:9px 0 8px; overflow:hidden; }}
+.sb-progress i {{ display:block; height:100%; border-radius:999px; background:var(--grad); }}
+.sb-src {{ display:flex; align-items:center; gap:7px; font-size:11.5px; color:var(--muted) !important; }}
+.sb-src::before {{ content:""; width:7px; height:7px; border-radius:50%; background:var(--c); box-shadow:0 0 0 3px {rgba(TEXT, .06)}; }}
 [data-testid="stSidebar"] [data-baseweb="select"] > div:first-child {{ background:var(--panel) !important; border-color:var(--border) !important; }}
 [data-baseweb="popover"], [role="listbox"] {{ background:var(--panel) !important; border-color:var(--border) !important; }}
 [role="option"] {{ background:var(--panel) !important; color:var(--text) !important; }}
@@ -144,7 +157,9 @@ hr {{ border-color:var(--border); }}
 .stButton > button[data-testid="stBaseButton-primary"]:hover {{ filter:brightness(1.08); color:#fff; }}
 [data-testid="stMetric"] {{ background:var(--panel); border:1px solid var(--border) !important; padding:14px 16px; border-radius:14px; }}
 [data-testid="stMetricLabel"] p {{ color:var(--muted) !important; font-size:13px; }}
-[data-testid="stMetricValue"] {{ color:var(--text); font-size:clamp(18px,1.6vw,24px) !important; font-weight:800; white-space:nowrap; letter-spacing:-.02em; }}
+[data-testid="stMetricValue"] {{ color:var(--text); font-size:clamp(17px,1.5vw,24px) !important; font-weight:800; letter-spacing:-.02em; }}
+/* 窄欄時金額換行而不是被截成「NT$ 85...」 */
+[data-testid="stMetricValue"] > div, [data-testid="stMetricDelta"] > div, [data-testid="stMetricLabel"] p {{ white-space:normal !important; overflow:visible !important; text-overflow:clip !important; }}
 [data-baseweb="tab-list"] {{ gap:4px; border-bottom:1px solid var(--border); }}
 [data-baseweb="tab"] {{ color:var(--muted); padding:8px 14px; border-radius:9px 9px 0 0; }}
 [data-baseweb="tab"][aria-selected="true"] {{ color:var(--text); }}
@@ -174,6 +189,22 @@ hr {{ border-color:var(--border); }}
 
 /* 修正「拖曳時圖表越變越大」：欄位允許縮小，圖表本身不加 padding／border，超出部分裁切。 */
 [data-testid="stColumn"] {{ min-width:0 !important; }}
+/* 版面列：寬度不夠時自動換行（Streamlit 原生要 640px 以下才堆疊，筆電＋側欄時會擠壓圖表）。
+   固定的 min-width 不依內容計算，不會重現「拖曳時圖表變大」的問題。 */
+[data-testid="stMain"] [data-testid="stHorizontalBlock"] {{ flex-wrap:wrap; row-gap:1rem; }}
+[data-testid="stMain"] [data-testid="stColumn"] {{ min-width:min(100%, 200px) !important; }}
+.st-key-nowrap-prompt [data-testid="stHorizontalBlock"] {{ flex-wrap:nowrap; }}
+.st-key-nowrap-prompt [data-testid="stColumn"] {{ min-width:0 !important; }}
+.st-key-wrap-hero [data-testid="stHorizontalBlock"], .st-key-wrap-list [data-testid="stHorizontalBlock"],
+.st-key-card-overview_heat [data-testid="stHorizontalBlock"] {{ flex-wrap:wrap; row-gap:1rem; }}
+.st-key-wrap-forecast [data-testid="stColumn"]:nth-child(1) {{ flex:1 1 300px !important; }}
+.st-key-wrap-forecast [data-testid="stColumn"]:nth-child(2) {{ flex:1.5 1 420px !important; }}
+.st-key-wrap-hero [data-testid="stColumn"]:nth-child(1) {{ flex:2.15 1 440px !important; }}
+.st-key-wrap-hero [data-testid="stColumn"]:nth-child(2) {{ flex:1 1 280px !important; }}
+.st-key-wrap-list [data-testid="stColumn"]:nth-child(1) {{ flex:1.65 1 440px !important; }}
+.st-key-wrap-list [data-testid="stColumn"]:nth-child(2) {{ flex:1 1 280px !important; }}
+.st-key-card-overview_heat [data-testid="stColumn"]:nth-child(1) {{ flex:3 1 280px !important; }}
+.st-key-card-overview_heat [data-testid="stColumn"]:nth-child(2) {{ flex:1 1 200px !important; }}
 [data-testid="stPlotlyChart"] {{ padding:0 !important; border:0 !important; background:transparent !important; overflow:hidden; max-width:100%; }}
 [data-testid="stPlotlyChart"] .js-plotly-plot, [data-testid="stPlotlyChart"] .plot-container {{ max-width:100%; }}
 
@@ -202,15 +233,26 @@ hr {{ border-color:var(--border); }}
 .lead .chips {{ margin-top:12px; }}
 
 /* ---------- KPI 卡 ---------- */
-.kpi-grid {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap:12px; margin-bottom:6px; }}
-.kpi {{ position:relative; min-height:142px; box-sizing:border-box; border:1px solid var(--border); border-radius:16px; padding:15px 18px 13px; display:flex; flex-direction:column; justify-content:space-between; gap:8px; overflow:hidden; }}
+/* 4 → 2 → 1 欄，避免 auto-fit 排出 3+1 的孤兒卡 */
+.kpi-wrap {{ container-type:inline-size; }}
+.kpi-grid {{ display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:14px; margin-bottom:6px; }}
+@container (max-width:900px) {{ .kpi-grid {{ grid-template-columns:repeat(2, minmax(0, 1fr)); }} }}
+@container (max-width:440px) {{ .kpi-grid {{ grid-template-columns:minmax(0, 1fr); }} }}
+.kpi {{ position:relative; min-height:196px; box-sizing:border-box; border:1px solid var(--border); border-radius:18px; padding:16px 18px 0; display:flex; flex-direction:column; gap:6px; overflow:hidden; }}
 .kpi .top {{ display:flex; align-items:center; gap:10px; min-width:0; }}
-.kpi .ic {{ width:34px; height:34px; border-radius:10px; display:flex; align-items:center; justify-content:center; flex:0 0 34px; font-size:17px; }}
-.kpi .lb {{ font-size:13px; color:var(--muted); font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
-.kpi .mid {{ display:flex; align-items:flex-end; justify-content:space-between; gap:12px; }}
-.kpi .vl {{ font-size:clamp(20px,1.9vw,27px); font-weight:900; color:var(--text); white-space:nowrap; letter-spacing:-.02em; line-height:1.1; }}
-.kpi .sb {{ font-size:12px; color:var(--muted); line-height:1.4; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
-.kpi .spark {{ flex:1 1 auto; max-width:46%; min-width:48px; height:32px; }}
+.kpi .ic {{ width:32px; height:32px; border-radius:10px; display:flex; align-items:center; justify-content:center; flex:0 0 32px; font-size:16px; }}
+.kpi .lb {{ font-size:13.5px; color:var(--muted); font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
+.kpi .vl {{ font-size:clamp(22px,2.1vw,30px); font-weight:900; color:var(--text); white-space:nowrap; letter-spacing:-.025em; line-height:1.15; margin-top:4px; }}
+.kpi .meta {{ display:flex; align-items:center; gap:8px; min-width:0; }}
+.kpi .sb {{ font-size:12px; color:var(--muted); line-height:1.4; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }}
+.delta {{ display:inline-flex; align-items:center; gap:3px; padding:2px 8px; border-radius:999px; font-size:11.5px; font-weight:800; white-space:nowrap; flex:0 0 auto; }}
+/* 卡片底部滿版的迷你圖：四張卡各用不同圖形（長條／面積／環形／正負長條） */
+.kpi .viz {{ margin:auto -18px 0; height:64px; display:flex; align-items:flex-end; }}
+.kpi .viz svg {{ width:100%; height:100%; display:block; }}
+.kpi .viz.ringrow {{ margin:auto 0 14px; height:auto; align-items:center; gap:12px; }}
+.kpi .viz.ringrow svg {{ width:58px; height:58px; flex:0 0 58px; }}
+.ring-lb {{ font-size:11.5px; color:var(--muted); line-height:1.5; min-width:0; }}
+.ring-lb b {{ display:block; font-size:13.5px; color:var(--text); font-weight:800; white-space:nowrap; letter-spacing:-.01em; }}
 
 /* ---------- 部門燈號清單 ---------- */
 .slist {{ background:var(--panel); border:1px solid var(--border); border-radius:16px; overflow:hidden; container-type:inline-size; }}
@@ -259,6 +301,12 @@ hr {{ border-color:var(--border); }}
 .flow-lb {{ font-size:12px; color:var(--muted); font-weight:600; }}
 .flow-vl {{ font-size:clamp(17px,1.6vw,22px); font-weight:900; color:var(--text); white-space:nowrap; margin-top:4px; }}
 .flow-sb {{ font-size:11.5px; color:var(--muted); margin-top:2px; }}
+.okcard, .next {{ display:flex; align-items:flex-start; gap:8px; }}
+.okcard .ico, .next .ico {{ margin-top:.2em; }}
+.okcard .ico {{ color:{STATUS_COLORS['預算正常']}; }}
+.next .ico {{ color:{ACCENT}; }}
+.lead-tag .ico {{ vertical-align:-2px; }}
+.check span {{ display:inline-flex; align-items:center; }}
 .check {{ display:flex; align-items:center; gap:10px; padding:10px 14px; border-top:1px solid var(--border); font-size:13.5px; }}
 .check:first-child {{ border-top:0; }}
 .check b {{ margin-left:auto; }}
@@ -834,7 +882,7 @@ def to_m(series):
     return (pd.to_numeric(series, errors="coerce") / 1e6).round(1)
 
 def status_label(status):
-    return f"{STATUS_EMOJI.get(status, '⚪')} {show_status(status)}"
+    return show_status(status)
 
 PLOT_TEMPLATE = "plotly_dark" if IS_DARK else "plotly_white"
 PLOT_CONFIG = {
@@ -954,10 +1002,14 @@ def show_chart(fig, title=None, help_text=None, key=None, caption=None):
         if caption:
             st.caption(caption)
 
-def ui_spark(values, color, ref=None, height=34):
-    """Tiny inline SVG trend line (optionally with a dashed reference line)."""
-    series = [float(v) if v is not None and pd.notna(v) else None for v in values]
-    reference = [float(v) if v is not None and pd.notna(v) else None for v in (ref or [])]
+_svg_ids = itertools.count()
+
+def _clean(values):
+    return [float(v) if v is not None and pd.notna(v) else None for v in values]
+
+def ui_area(values, color, ref=None, height=64):
+    """Full-bleed area sparkline with a vertical gradient fill (optionally with a dashed reference line)."""
+    series, reference = _clean(values), _clean(ref or [])
     pool = [v for v in series + reference if v is not None]
     if len(pool) < 2:
         return ""
@@ -965,30 +1017,92 @@ def ui_spark(values, color, ref=None, height=34):
     span = (hi - lo) or 1.0
     n = max(len(series), len(reference), 2)
 
-    def points(seq):
-        return " ".join(
-            f"{i / (n - 1) * 100:.2f},{(1 - (v - lo) / span) * (height - 6) + 3:.2f}"
-            for i, v in enumerate(seq) if v is not None
-        )
-    ref_line = (f'<polyline points="{points(reference)}" fill="none" stroke="{MUTED}" stroke-width="1.4" '
-                f'stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>') if reference else ""
-    return (f'<svg class="spark" viewBox="0 0 100 {height}" preserveAspectRatio="none">{ref_line}'
-            f'<polyline points="{points(series)}" fill="none" stroke="{color}" stroke-width="2.2" '
+    def xy(seq):
+        return [(i / (n - 1) * 100, (1 - (v - lo) / span) * (height - 10) + 6) for i, v in enumerate(seq) if v is not None]
+    pts = xy(series)
+    line = " ".join(f"{x:.2f},{y:.2f}" for x, y in pts)
+    area = f"{pts[0][0]:.2f},{height} {line} {pts[-1][0]:.2f},{height}"
+    gid = f"ga{next(_svg_ids)}"
+    ref_line = ""
+    if reference:
+        ref_pts = " ".join(f"{x:.2f},{y:.2f}" for x, y in xy(reference))
+        ref_line = (f'<polyline points="{ref_pts}" fill="none" stroke="{MUTED}" stroke-width="1.3" '
+                    f'stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>')
+    return (f'<svg viewBox="0 0 100 {height}" preserveAspectRatio="none">'
+            f'<defs><linearGradient id="{gid}" x1="0" y1="0" x2="0" y2="1">'
+            f'<stop offset="0" stop-color="{color}" stop-opacity=".42"/><stop offset="1" stop-color="{color}" stop-opacity="0"/></linearGradient></defs>'
+            f'<polygon points="{area}" fill="url(#{gid})"/>{ref_line}'
+            f'<polyline points="{line}" fill="none" stroke="{color}" stroke-width="2.2" '
             f'stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg>')
 
-def ui_kpi(label, value, sub, icon, color, glow=False, spark=""):
+def ui_bars(values, colors, height=64):
+    """Full-bleed column sparkline; negative values hang below a zero line. colors: one per bar."""
+    series = [v or 0.0 for v in _clean(values)]
+    if not series:
+        return ""
+    top, bottom = max(series + [0.0]), min(series + [0.0])
+    span = (top - bottom) or 1.0
+    usable = height - 8
+    zero = 4 + top / span * usable
+    slot = 100 / len(series)
+    rects = []
+    for i, (v, c) in enumerate(zip(series, colors)):
+        h = max(abs(v) / span * usable, .8)
+        y = zero - h if v >= 0 else zero
+        rects.append(f'<rect x="{i * slot + slot * .2:.2f}" y="{y:.2f}" width="{slot * .6:.2f}" height="{h:.2f}" fill="{c}"/>')
+    baseline = (f'<line x1="0" x2="100" y1="{zero:.2f}" y2="{zero:.2f}" stroke="{BORDER}" stroke-width="1" '
+                f'vector-effect="non-scaling-stroke"/>') if bottom < 0 else ""
+    return f'<svg viewBox="0 0 100 {height}" preserveAspectRatio="none">{baseline}{"".join(rects)}</svg>'
+
+def ui_ring(pct, color, over_color=None):
+    """Donut progress ring; anything above 100% wraps around again in over_color."""
+    pct = max(float(pct), 0.0)
+    base = min(pct, 100.0)
+    over = min(pct - 100.0, 100.0) if pct > 100 else 0.0
+    arc = lambda p, c, w: (f'<circle cx="18" cy="18" r="15.5" fill="none" stroke="{c}" stroke-width="{w}" stroke-linecap="round" '
+                           f'pathLength="100" stroke-dasharray="{p:.2f} 100" transform="rotate(-90 18 18)"/>') if p > 0 else ""
+    return (f'<svg viewBox="0 0 36 36"><circle cx="18" cy="18" r="15.5" fill="none" stroke="{TRACK}" stroke-width="4"/>'
+            f'{arc(base, color, 4)}{arc(over, over_color or color, 4)}'
+            f'<text x="18" y="19.6" text-anchor="middle" font-size="7.4" font-weight="800" fill="{TEXT}">{pct:.0f}%</text></svg>')
+
+def ui_delta(text, color, direction=None):
+    """'vs last period' pill; direction 'up'/'down' adds a trend arrow."""
+    arrow = icon(direction, 12, stroke=2.6) if direction in ("up", "down") else ""
+    return f'<span class="delta" style="color:{color};background:{rgba(color, .14)};border:1px solid {rgba(color, .32)}">{arrow}{text}</span>'
+
+def ui_kpi(label, value, sub, icon_name, color, glow=False, viz="", delta="", ring=False):
     if glow:
-        background = f"linear-gradient(145deg,{rgba(color, .16)},{PANEL} 70%)"
-        shadow = f"0 0 0 1px {rgba(color, .40)},0 10px 30px {rgba(color, .18)}"
+        background = f"linear-gradient(160deg,{rgba(color, .16)},{PANEL} 65%)"
+        shadow = f"0 0 0 1px {rgba(color, .40)},0 12px 32px {rgba(color, .18)}"
         border = rgba(color, .55)
     else:
-        background = f"linear-gradient(145deg,{PANEL},{RAISED})"
-        shadow = f"0 6px 22px rgba(0,0,0,{.18 if IS_DARK else .05})"
+        background = f"linear-gradient(160deg,{RAISED},{PANEL} 70%)"
+        shadow = f"0 8px 26px rgba(0,0,0,{.22 if IS_DARK else .05})"
         border = BORDER
     return (f'<div class="kpi" style="background:{background};box-shadow:{shadow};border-color:{border}">'
-            f'<div class="top"><div class="ic" style="background:{rgba(color, .16)}">{icon}</div>'
-            f'<div class="lb">{label}</div></div><div class="mid"><div class="vl">{value}</div>{spark}</div>'
-            f'<div class="sb" title="{sub}">{sub}</div></div>')
+            f'<div class="top"><div class="ic" style="background:{rgba(color, .14)};color:{color}">{icon(icon_name, 17)}</div>'
+            f'<div class="lb">{label}</div></div><div class="vl">{value}</div>'
+            f'<div class="meta">{delta}<span class="sb" title="{sub}">{sub}</span></div>'
+            f'<div class="viz{" ringrow" if ring else ""}">{viz}</div></div>')
+
+# 線條圖示（Lucide 風格），取代 emoji，用於自訂 HTML 區塊。
+ICON_PATHS = {
+    "wallet": '<path d="M19 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0 0 4h14a2 2 0 0 1 2 2v3"/><path d="M3 5v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-3"/><path d="M21 12h-4a2 2 0 0 0 0 4h4z"/>',
+    "activity": '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
+    "trending": '<path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/>',
+    "alert": '<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+    "shield": '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/>',
+    "check": '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>',
+    "arrow": '<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>',
+    "sparkles": '<path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9z"/>',
+    "database": '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5"/><path d="M3 12c0 1.7 4 3 9 3s9-1.3 9-3"/>',
+    "up": '<path d="M7 17 17 7"/><path d="M8 7h9v9"/>',
+    "down": '<path d="M7 7l10 10"/><path d="M17 8v9H8"/>',
+}
+
+def icon(name, size=16, color="currentColor", stroke=2):
+    return (f'<svg class="ico" viewBox="0 0 24 24" width="{size}" height="{size}" fill="none" stroke="{color}" stroke-width="{stroke}" '
+            f'stroke-linecap="round" stroke-linejoin="round" style="flex:0 0 auto;vertical-align:-0.15em">{ICON_PATHS[name]}</svg>')
 
 def ui_chip(text, color=None):
     dot = f'<span class="dot" style="background:{color}"></span>' if color else ""
@@ -1085,7 +1199,7 @@ def ollama_chat_stream(host, model, api_key, messages, system):
         ],
         "stream": True,
         "keep_alive": "30m",  # 展示期間讓模型常駐記憶體，避免每次冷啟動
-        "options": {"temperature": 0.2, "num_ctx": 16384},
+        "options": {"temperature": 0.2, "num_ctx": 32768},  # 完整資料表約 1.5 萬 token，留足空間
     }
     request = urllib.request.Request(
         f"{host}/api/chat", data=json.dumps(payload).encode("utf-8"),
@@ -1231,28 +1345,28 @@ def local_budget_reply(question, budget_data, year):
 # ==========================================
 with sb_brand:
     st.markdown(
-        f'<div class="sb-brand"><div class="sb-mark"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#fff" '
-        f'stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg></div>'
+        f'<div class="sb-brand"><div class="sb-mark"><svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="#fff" '
+        f'stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l5-5 4 3 8-8"/><path d="M15 7h5v5"/></svg></div>'
         f'<div><div class="sb-title">{tx("預算決策中心", "Budget Command Center")}</div>'
         f'<div class="sb-sub">BNP Paribas Cardif TW · {tx("競賽展示版", "Hackathon demo")}</div></div></div>',
         unsafe_allow_html=True,
     )
 
-main_nav_ids = ["overview", "budget_analysis", "forecast_risk", "scenarios_quality", "ai_assistant"]
-main_nav_labels = {
-    "overview": tx(":material/dashboard: 總覽", ":material/dashboard: Overview"),
-    "budget_analysis": tx(":material/bar_chart: 預算分析", ":material/bar_chart: Budget analysis"),
-    "forecast_risk": tx(":material/trending_up: 預測與預警", ":material/trending_up: Forecast & risk"),
-    "scenarios_quality": tx(":material/tune: 情境與資料品質", ":material/tune: Scenarios & data quality"),
-    "ai_assistant": tx(":material/forum: AI 助理", ":material/forum: AI assistant"),
-}
-with sb_nav:
-    st.markdown(f'<div class="sb-label">{tx("功能", "Navigate")}</div>', unsafe_allow_html=True)
-    with st.container(key="nav_slot"):
-        active_nav_id = st.radio(
-            tx("主要功能", "Navigation"), main_nav_ids, format_func=lambda nav_id: main_nav_labels[nav_id],
-            key="main_navigation_id", label_visibility="collapsed",
-        )
+# 原生主題（右上角選單）切換時 Streamlit 不會自動重跑，自訂樣式與圖表會停在舊配色。
+# 這段腳本偵測原生背景亮度與目前渲染的主題不一致時，點擊隱藏按鈕觸發重跑，讓整頁一起換色。
+with st.sidebar.container(key="theme_sync_slot"):
+    st.button("theme-sync", key="theme_sync")
+    st.html(f"""<script>
+(() => {{
+  const rendered = "{'dark' if IS_DARK else 'light'}";
+  const tone = () => {{ const m = getComputedStyle(document.body).backgroundColor.match(/\\d+/g);
+    return m && (0.299 * m[0] + 0.587 * m[1] + 0.114 * m[2]) < 128 ? "dark" : "light"; }};
+  clearInterval(window.__themeSync);
+  window.__themeSync = setInterval(() => {{
+    if (tone() !== rendered) {{ clearInterval(window.__themeSync); document.querySelector(".st-key-theme_sync button")?.click(); }}
+  }}, 400);
+}})();
+</script>""", unsafe_allow_javascript=True)
 
 with sb_settings:
     st.markdown(f'<div class="sb-label">{tx("系統", "System")}</div>', unsafe_allow_html=True)
@@ -1295,8 +1409,8 @@ with sb_settings:
         if ai_locked:
             ai_provider = config_value("AI_PROVIDER", "gemini")
             ai_provider = ai_provider if ai_provider in provider_names else "rules"
-            st.caption(tx("🔒 公開模式：AI 服務與金鑰由管理者在伺服器端設定，訪客無法查看或修改。",
-                          "🔒 Public mode: AI services and keys are configured on the server and cannot be viewed or changed by visitors."))
+            st.caption(tx(":material/lock: 公開模式：AI 服務與金鑰由管理者在伺服器端設定，訪客無法查看或修改。",
+                          ":material/lock: Public mode: AI services and keys are configured on the server and cannot be viewed or changed by visitors."))
         else:
             detected = list_ollama_models(cfg_host, config_value("OLLAMA_API_KEY"))[0]
             default_provider = config_value("AI_PROVIDER", "ollama" if detected else next(
@@ -1332,8 +1446,8 @@ with sb_settings:
         else:
             ollama_model = preferred_model if (not ollama_models or preferred_model in ollama_models) else ollama_models[0]
             if ai_provider == "ollama" and not ollama_models and not ai_locked:
-                st.caption(tx(f"⚠️ 目前連不到 Ollama（{ollama_error}）。本機請安裝 Ollama 並執行 `ollama pull {preferred_model}`。",
-                              f"⚠️ Ollama is not reachable ({ollama_error}). Install Ollama locally and run `ollama pull {preferred_model}`."))
+                st.caption(tx(f":material/warning: 目前連不到 Ollama（{ollama_error}）。本機請安裝 Ollama 並執行 `ollama pull {preferred_model}`。",
+                              f":material/warning: Ollama is not reachable ({ollama_error}). Install Ollama locally and run `ollama pull {preferred_model}`."))
         st.caption(tx("淺色／深色主題：右上角選單 ⋮ → Settings。", "Light/dark theme: top-right menu ⋮ → Settings."))
         st.caption(tx("內建資料為競賽展示用合成資料，數字邏輯依保險業常見情境設計（年末消耗、一次性 CAPEX、專案超支／延宕），不代表任何公司實際數據。",
                       "Built-in data is synthetic for the demo. It models common insurance scenarios (year-end flush, one-off CAPEX, project overruns and delays) and does not represent any company's actual figures."))
@@ -1444,14 +1558,58 @@ def executive_summary(analysis):
         parts.append(tx("所有部門皆在預警門檻內。", "All departments are within alert thresholds."))
     return "".join(parts) if not IS_EN else " ".join(parts)
 
-def build_ai_facts(question=None):
-    """Compact budget facts for the LLM. Amounts are pre-formatted text so small models never convert units themselves.
+@st.cache_data(show_spinner=False)
+def _ai_data_tables(monthly_data, expense_data, lang_en, status_by_dept, selected_year_value, thresholds):
+    """The whole loaded database as compact text tables (NT$ 萬, integers), so the assistant can answer any data question."""
+    wan = lambda v: "" if pd.isna(v) else f"{v / 1e4:.0f}"
+    name = lambda d: (DEPT_EN.get(d.split(" (")[0], d) if lang_en else d.split(" (")[0])
+    monthly_lines = ["年度|部門|項目|1月 2月 3月 4月 5月 6月 7月 8月 9月 10月 11月 12月|全年合計（實際為已結算月份合計）"]
+    annual_lines = ["年度|部門|年度預算|實際支出|已結算月數|執行率(實際÷同期預算)|狀態"]
+    for (year, dept), g in monthly_data.sort_values(["Year", "Department", "Month"]).groupby(["Year", "Department"], sort=True):
+        g = g.set_index("Month").reindex(MONTHS)
+        closed = int(g.Actual.notna().sum())
+        monthly_lines.append(f"{year}|{name(dept)}|預算|{' '.join(wan(v) for v in g.Budget)}|{wan(g.Budget.sum())}")
+        monthly_lines.append(f"{year}|{name(dept)}|實際|{' '.join(wan(v) or '-' for v in g.Actual)}|{wan(g.Actual.sum(min_count=1))}")
+        budget_to_date = g.Budget[g.Actual.notna()].sum()
+        rate = g.Actual.sum() / budget_to_date * 100 if budget_to_date else float("nan")
+        if closed == 12:
+            status = show_status(classify_status(g.Actual.sum() / g.Budget.sum())) if g.Budget.sum() else ""
+        elif year == selected_year_value and dept in status_by_dept:
+            status = f"{status_by_dept[dept]}（依年底預測）"
+        else:
+            status = "進行中"
+        annual_lines.append(f"{year}|{name(dept)}|{wan(g.Budget.sum())}|{wan(g.Actual.sum(min_count=1))}|{closed}|"
+                            f"{'' if pd.isna(rate) else f'{rate:.1f}%'}|{status}")
+    category_lines = ["年度|部門|各費用科目已發生金額（萬元）"]
+    for (year, dept), g in expense_data.groupby(["Year", "Department"], sort=True):
+        parts = g.groupby("Account").Amount.sum().sort_values(ascending=False)
+        category_lines.append(f"{year}|{name(dept)}|" + "；".join(f"{show_account(a)} {wan(v)}" for a, v in parts.items()))
+    events = monthly_data[monthly_data.EventNote.astype(str).str.strip().ne("")]
+    event_lines = ["年度|部門|月份|事件|一次性金額（萬元，空白=經常性事件）"]
+    for (year, dept, note), g in events.groupby(["Year", "Department", "EventNote"], sort=True):
+        months = f"{int(g.Month.min())}-{int(g.Month.max())}" if g.Month.nunique() > 1 else f"{int(g.Month.min())}"
+        one_off = g.OneOffAmount.sum()
+        event_lines.append(f"{year}|{name(dept)}|{months}|{show_event(note)}|{wan(one_off) if one_off > 0 else ''}")
+    return {
+        "unit_note": "表格金額單位皆為新台幣「萬元」整數；引用時寫成「NT$ ○○ 萬」，超過 10,000 萬可換算為億（10,000 萬 = 1 億）。'-' 表示該月尚未結算。",
+        "annual_by_department": "\n".join(annual_lines),
+        "monthly_budget_and_actual": "\n".join(monthly_lines),
+        "expense_categories_by_year": "\n".join(category_lines),
+        "tagged_events_all_years": "\n".join(event_lines),
+    }
 
-    Detail sections are attached only when the question needs them, which roughly halves token use on free-tier APIs.
+def ai_data_tables():
+    thresholds = tuple(st.session_state.get(k, d) for k, d in (("thr_watch_pct", 102), ("thr_high_pct", 105), ("thr_lag_pct", 90)))
+    return _ai_data_tables(df_db, expense_detail, IS_EN, {r.Department: show_status(r.Status) for r in analysis_res.itertuples()},
+                           selected_year, thresholds)
+
+def build_ai_facts(question=None):
+    """Budget facts for the LLM: pre-formatted headline analysis for the selected year plus the whole database as compact tables.
+
+    Headline amounts are pre-formatted text so small models never convert units for the key figures.
     """
     q = (question or "").casefold()
     wants = lambda *terms: question is not None and any(t in q for t in terms)
-    category_ytd = assistant_current_expenses.groupby(["Department", "Account"]).Amount.sum()
     ordered = analysis_res.assign(_s=analysis_res.Status.map(STATUS_SEVERITY)).sort_values(["_s", "Forecast_Var"], ascending=[True, False])
     m = data_cutoff_month
     facts = {
@@ -1471,7 +1629,7 @@ def build_ai_facts(question=None):
             for r in analysis_res[analysis_res.Forecast_Var < 0].sort_values("Forecast_Var").itertuples()
         ],
         "alerts_to_report_in_this_order": [
-            f"{STATUS_EMOJI[r.Status]} {show_dept(r.Department)} | {show_status(r.Status)} | "
+            f"{show_dept(r.Department)} | {show_status(r.Status)} | "
             f"{tx('年底預測差異', 'year-end forecast variance')} {fmc(r.Forecast_Var, signed=True)} ({fpct(r.Forecast_Pct, signed=True)}) | "
             f"{risk_evidence(df_db, selected_year, r)[0]}"
             for r in ordered.itertuples() if r.Status != "預算正常"
@@ -1487,27 +1645,8 @@ def build_ai_facts(question=None):
              "evidence": risk_evidence(df_db, selected_year, r)}
             for r in ordered.itertuples()
         ],
-        "historical_annual_actual_vs_budget": [
-            {"year": int(year), "department": show_dept(dept), "actual": fmc(row.Actual), "execution_rate": fpct(row.Actual / row.Budget * 100)}
-            for (year, dept), row in df_db[
-                df_db.Department.isin(selected_depts) & df_db.Actual.notna() & (df_db.Year < selected_year)
-            ].groupby(["Year", "Department"])[["Budget", "Actual"]].sum().iterrows()
-        ],
-        "selected_year_monthly_company_totals": [
-            {"month": int(mo), "budget": fmc(monthly_budget.loc[mo]),
-             "actual": fmc(monthly_actual.loc[mo]) if pd.notna(monthly_actual.loc[mo]) else None,
-             "forecast": fmc(monthly_estimate.loc[mo]) if monthly_estimate.loc[mo] > 0 else None}
-            for mo in MONTHS
-        ],
-        "tagged_events": [
-            {"department": show_dept(r.Department), "month": int(r.Month), "event": show_event(r.EventNote),
-             "one_off_amount": fmc(r.OneOffAmount) if r.OneOffAmount > 0 else None}
-            for r in df_filtered_year[df_filtered_year.EventNote.astype(str).str.strip().ne("")].drop_duplicates(["Department", "EventNote"]).itertuples()
-        ],
-        f"expense_category_spent_through_month_{m}": [
-            {"department": show_dept(dept), "category": show_account(account), "amount": fmc(amount)}
-            for (dept, account), amount in category_ytd.items()
-        ],
+        f"selected_year_monthly_forecast_for_open_months_wan": " ".join(
+            f"{mo}月:{monthly_estimate.loc[mo] / 1e4:.0f}" for mo in MONTHS if monthly_estimate.loc[mo] > 0),
         "cost_driver_screen_vs_prior_years_same_period": [
             {"department": show_dept(row.Department), "category": show_account(row.Account),
              "current": fmc(row.Amount),
@@ -1521,26 +1660,50 @@ def build_ai_facts(question=None):
             for row in assistant_duplicates.itertuples()
         ],
     }
-    optional = {
-        "historical_annual_actual_vs_budget": wants("歷史", "往年", "去年", "歷年", "前年", "history", "past", "last year", "trend", "趨勢"),
-        "selected_year_monthly_company_totals": wants("月", "季", "month", "quarter", "季節", "season", "趨勢", "trend"),
-        f"expense_category_spent_through_month_{m}": wants("科目", "費用", "成本", "原因", "為什麼", "雲端", "顧問", "廣告", "訓練",
-                                                          "category", "cost", "why", "cause", "driver", "cloud"),
-        "cost_driver_screen_vs_prior_years_same_period": wants("原因", "為什麼", "驅動", "異常", "成本", "why", "cause", "driver", "anomal"),
-        "potential_duplicate_lines": wants("重複", "稽核", "異常", "發票", "duplicate", "audit", "invoice", "anomal"),
-    }
-    for section_name, needed in optional.items():
-        if not needed:
-            facts.pop(section_name, None)
+    facts["full_database_tables"] = ai_data_tables()
+
+    # 問到其他年度（「2025年」「去年」）時，另外附上該年度完整的部門分析與判斷依據。
+    asked = {int(y) for y in re.findall(r"20\d{2}", q)}
+    if wants("去年", "last year"):
+        asked.add(selected_year - 1)
+    if wants("前年"):
+        asked.add(selected_year - 2)
+    asked = sorted((asked & set(int(y) for y in df_db.Year.unique())) - {selected_year})
+    if asked:
+        facts["other_fiscal_years_requested"] = {}
+        for year in asked[:2]:
+            other = analyze_budget(df_db, year, selected_depts)
+            other = other.assign(_s=other.Status.map(STATUS_SEVERITY)).sort_values(["_s", "Forecast_Var"], ascending=[True, False])
+            closed = int(other.Actual_Cutoff_Month.max()) if len(other) else 0
+            facts["other_fiscal_years_requested"][str(year)] = {
+                "actuals_closed_through_month": closed,
+                "company_total": {"annual_budget": fmc(other.Budget_Full.sum()), "actual_spent": fmc(other.Actual_YTD.sum()),
+                                  "year_end_result_or_forecast": fmc(other.Forecast_EOY.sum()),
+                                  "minus_budget": fmc(other.Forecast_EOY.sum() - other.Budget_Full.sum(), signed=True)},
+                "departments": [
+                    {"department": show_dept(r.Department), "status": show_status(r.Status),
+                     "annual_budget": fmc(r.Budget_Full), "actual_spent": fmc(r.Actual_YTD),
+                     "year_end_result_or_forecast": fmc(r.Forecast_EOY),
+                     "minus_budget": f"{fmc(r.Forecast_Var, signed=True)} ({fpct(r.Forecast_Pct, signed=True)})",
+                     "evidence": risk_evidence(df_db, year, r)}
+                    for r in other.itertuples()
+                ],
+            }
     return facts
 
 AI_RULES = (
     "You are a budget analysis assistant for an insurance company's finance team. "
     "Always answer in the requested language; for Chinese use Taiwan Traditional Chinese. "
-    "All amounts in the facts are already formatted (e.g. 'NT$ 30.71 億'): copy them exactly, never convert units or recompute them. "
+    "Headline amounts are already formatted (e.g. 'NT$ 30.71 億'): copy them exactly. Table amounts are integers in 萬 (NT$ 10 thousand); keep the 萬 unit when quoting them. "
     "Distinguish carefully between amounts 'through month N' (actuals so far) and 'year_end_forecast' figures; never mix them. "
     "For rankings (largest overspend, most unused budget / reallocation sources) use the pre-sorted lists as given; a positive variance is overspend, never headroom. "
-    "Use only the supplied facts for numbers and say when data is insufficient. "
+    "The headline facts (company_total, departments, alerts) describe the dashboard's selected fiscal year and selected departments. "
+    "full_database_tables contains the WHOLE loaded database for every year and department: monthly budget and actual, annual summary with status, "
+    "expense categories by year and tagged events. Use these tables to answer any question about other years, months, quarters, departments, "
+    "categories, trends, growth rates, rankings or comparisons; you may add, subtract and compute percentages from table values, and show the figures you used. "
+    "A year with 12 closed months is a final result, not a forecast. For other years you may mention that the 分析年度 slider switches the dashboard to that year. "
+    "For general finance, budgeting, insurance or regulation concepts (e.g. IFRS 17, TW-ICS, run rate, variance analysis) you may answer from your own knowledge, "
+    "but every number about this company must come from the supplied facts; if the data truly does not contain something, say so and suggest what data would be needed. "
     "When explaining risk, cite the department, amount, comparison basis and the supplied evidence; do not invent causes. "
     "Forecasts blend 55% seasonality from prior complete years and 45% run rate; one-off amounts are not extrapolated. "
     "Built-in data is synthetic demo data, not real company figures. Variance screens are review signals, not proof of fraud. "
@@ -1602,7 +1765,7 @@ def alert_message_lines():
     """System-generated alert messages: always complete and numerically exact (not left to the LLM)."""
     alerts = analysis_res[analysis_res.Status != "預算正常"].assign(_s=lambda d: d.Status.map(STATUS_SEVERITY)).sort_values(["_s", "Forecast_Var"], ascending=[True, False])
     lines = [
-        f"- {STATUS_EMOJI[r.Status]} **{show_dept(r.Department)}｜{show_status(r.Status)}**："
+        f"- **{show_dept(r.Department)}｜{show_status(r.Status)}**："
         f"{tx('年底預測差異', 'year-end forecast variance')} {fmc(r.Forecast_Var, signed=True)}（{fpct(r.Forecast_Pct, signed=True)}）。"
         f"{risk_evidence(df_db, selected_year, r)[0]}"
         for r in alerts.itertuples()
@@ -1629,7 +1792,7 @@ def ai_brief_panel(key):
     cached = st.session_state.get("ai_brief")
     with card(f"brief-{key}"):
         head, action = st.columns([3, 1.3], vertical_alignment="center")
-        head.markdown(f'<div class="chart-title">✨ {tx("AI 預算分析摘要與預警訊息", "AI budget brief & alert messages")}</div>', unsafe_allow_html=True,
+        head.markdown(f'<div class="chart-title">{icon("sparkles", 16, ACCENT)} {tx("AI 預算分析摘要與預警訊息", "AI budget brief & alert messages")}</div>', unsafe_allow_html=True,
                       help=tx("由所選模型依目前篩選資料撰寫；無模型時改用內建規則產生，數字皆來自系統計算結果。",
                               "Written by the selected model from the current filters; without a model, built-in rules generate it. All numbers come from the system's calculations."))
         clicked = action.button(tx("產生摘要", "Generate brief") if not (cached and cached["sig"] == signature) else tx("重新產生", "Regenerate"),
@@ -1652,7 +1815,7 @@ def ai_brief_panel(key):
                         source += tx("（已自動略過：", " (skipped: ") + "；".join(notes) + tx("）", ")")
                 except Exception as err:
                     text, source = rule_based_brief(), tx("內建規則（模型額度已用完或無法連線）", "Built-in rules (model quota used up or unreachable)")
-                    st.caption(f"ℹ️ {err}")
+                    st.caption(f":material/info: {err}")
             else:
                 text, source = rule_based_brief(), tx("內建規則", "Built-in rules")
             cached = {"sig": signature, "text": text.strip(), "source": source}
@@ -1731,6 +1894,40 @@ def build_chat_chart(chart_spec):
 # 7. 頁首
 # ==========================================
 source_color = STATUS_COLORS["需注意"] if is_synthetic else STATUS_COLORS["預算正常"]
+
+# 導覽放在共用計算之後建立（容器已預先排好位置），「預測與預警」才能帶出目前預警部門數。
+alert_count = int((analysis_res.Status != "預算正常").sum())
+main_nav_ids = ["overview", "budget_analysis", "forecast_risk", "scenarios_quality", "ai_assistant"]
+main_nav_labels = {
+    "overview": tx(":material/space_dashboard: 總覽", ":material/space_dashboard: Overview"),
+    "budget_analysis": tx(":material/bar_chart: 預算分析", ":material/bar_chart: Budget analysis"),
+    "forecast_risk": tx(":material/notifications_active: 預測與預警", ":material/notifications_active: Forecast & risk")
+                     + (f" :red-badge[{alert_count}]" if alert_count else ""),
+    "scenarios_quality": tx(":material/tune: 情境與資料品質", ":material/tune: Scenarios & data"),
+    "ai_assistant": tx(":material/auto_awesome: AI 助理", ":material/auto_awesome: AI assistant"),
+}
+with sb_nav:
+    st.markdown(f'<div class="sb-label">{tx("工作區", "Workspace")}</div>', unsafe_allow_html=True)
+    with st.container(key="nav_slot"):
+        active_nav_id = st.radio(
+            tx("主要功能", "Navigation"), main_nav_ids, format_func=lambda nav_id: main_nav_labels[nav_id],
+            key="main_navigation_id", label_visibility="collapsed",
+        )
+    # 分組標題：總覽 ｜ 分析 ｜ 智慧工具
+    st.markdown(f"""<style>
+.st-key-nav_slot [role="radiogroup"] > div:nth-child(2), .st-key-nav_slot [role="radiogroup"] > div:nth-child(5) {{ margin-top:30px; position:relative; }}
+.st-key-nav_slot [role="radiogroup"] > div:nth-child(2)::before, .st-key-nav_slot [role="radiogroup"] > div:nth-child(5)::before {{
+    position:absolute; left:4px; top:-22px; font-size:10.5px; font-weight:700; letter-spacing:.12em; color:{MUTED}; opacity:.85; }}
+.st-key-nav_slot [role="radiogroup"] > div:nth-child(2)::before {{ content:"{tx('分析', 'ANALYSIS')}"; }}
+.st-key-nav_slot [role="radiogroup"] > div:nth-child(5)::before {{ content:"{tx('智慧工具', 'AI TOOLS')}"; }}
+</style>""", unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="sb-label">{tx("資料狀態", "Data status")}</div><div class="sb-status">'
+        f'<div class="sb-status-row"><span>FY{selected_year} {tx("結算進度", "close progress")}</span><b>{data_cutoff_month} / 12</b></div>'
+        f'<div class="sb-progress"><i style="width:{data_cutoff_month / 12 * 100:.0f}%"></i></div>'
+        f'<div class="sb-src" style="--c:{source_color}">{data_source}</div></div>',
+        unsafe_allow_html=True,
+    )
 hero_chips = "".join([
     ui_chip(tx(f"FY{selected_year}", f"FY{selected_year}"), ACCENT),
     ui_chip(tx(f"資料截至 {data_cutoff_month} 月", f"Data through month {data_cutoff_month}") if data_cutoff_month else tx("尚無實際數", "No actuals yet")),
@@ -1750,7 +1947,7 @@ dept_col = tx("部門", "Department")
 status_col = tx("狀態", "Status")
 
 # ------------------------------------------
-# 總覽：結論 → KPI → 燈號 → 主圖 → 詳細（折疊）
+# 總覽：結論 → KPI → 主圖＋狀態環圖 → 燈號 → 熱力圖 → 詳細（折疊）
 # ------------------------------------------
 if active_nav_id == "overview":
     n_by_status = {s: int((analysis_res.Status == s).sum()) for s in STATUS_ORDER}
@@ -1764,45 +1961,135 @@ if active_nav_id == "overview":
     # ---- 1. 智慧摘要：先給答案 ----
     chips = "".join(ui_chip(f"{show_status(s)} {n_by_status[s]}", STATUS_COLORS[s]) for s in STATUS_ORDER)
     st.markdown(
-        f'<div class="lead" style="--c:{lead_color}"><div class="lead-tag">✦ {tx("智慧摘要", "Executive summary")}</div>'
+        f'<div class="lead" style="--c:{lead_color}"><div class="lead-tag">{icon("sparkles", 13)} {tx("智慧摘要", "Executive summary")}</div>'
         f'<div class="lead-text">{executive_summary(analysis_res)}</div><div class="chips">{chips}</div></div>',
         unsafe_allow_html=True,
     )
 
-    # ---- 2. 四張語意化 KPI 卡（含趨勢小圖；異常時帶微光） ----
+    # ---- 2. 四張 KPI 卡：變化膠囊 + 底部滿版迷你圖（每張不同圖形；異常時帶微光） ----
     cum_budget = monthly_budget.cumsum()
     cum_actual = monthly_actual.where(monthly_actual.index <= data_cutoff_month).cumsum()
     cum_path = (monthly_actual.fillna(0) + monthly_estimate).cumsum()
     pace_gap = actual_pct - budget_pace_pct
     actual_color = STATUS_COLORS["需注意"] if pace_gap > 2 else ACCENT
     forecast_color = STATUS_COLORS[forecast_status]
+    over_color, ok_color = STATUS_COLORS["高風險超支"], STATUS_COLORS["預算正常"]
+    low_total, high_total = float(analysis_res.Forecast_Low.sum()), float(analysis_res.Forecast_High.sum())
+    closed = monthly_budget.index <= data_cutoff_month
+    # 每月差異：已結算月份用實際數，未結算月份用預測分配數（淡色）
+    monthly_gap = (monthly_actual.where(closed, monthly_estimate) - monthly_budget).fillna(0.0)
+    prior_budget = float(df_db[(df_db.Year == selected_year - 1) & df_db.Department.isin(selected_depts)].Budget.sum())
+    over_count = int((analysis_res.Forecast_Var > 0).sum())
+
+    if prior_budget:
+        budget_yoy = (tb_sum / prior_budget - 1) * 100
+        budget_delta = ui_delta(fpct(budget_yoy, signed=True), ACCENT, "up" if budget_yoy >= 0 else "down")
+        budget_sub = tx(f"vs FY{selected_year - 1} 預算", f"vs FY{selected_year - 1} budget")
+    else:
+        budget_delta, budget_sub = "", tx("目前選取部門合計", "Selected departments")
     kpis = [
-        ui_kpi(tx("年度總預算", "Annual budget"), fmc(tb_sum), tx("目前選取部門合計", "Selected departments"),
-               "💰", ACCENT, spark=ui_spark(cum_budget.tolist(), ACCENT)),
+        ui_kpi(tx("年度總預算", "Annual budget"), fmc(tb_sum), budget_sub, "wallet", ACCENT, delta=budget_delta,
+               viz=ui_bars(monthly_budget.tolist(), [rgba(ACCENT, .85 if c else .32) for c in closed])),
         ui_kpi(tx("已執行金額", "Actual spending"), fmc(ta_sum),
-               tx(f"佔全年 {fpct(actual_pct)}｜應有進度 {fpct(budget_pace_pct)}", f"{fpct(actual_pct)} used · plan {fpct(budget_pace_pct)}"),
-               "📊", actual_color, glow=pace_gap > 2,
-               spark=ui_spark(cum_actual.tolist(), actual_color, ref=cum_budget.where(cum_budget.index <= data_cutoff_month).tolist())),
-        ui_kpi(tx("年底預測支出", "Year-end forecast"), fmc(tf_sum),
-               tx(f"相較預算 {fpct(variance_pct, signed=True)}｜{show_status(forecast_status)}", f"{fpct(variance_pct, signed=True)} vs. budget · {show_status(forecast_status)}"),
-               "📈", forecast_color, glow=forecast_status != "預算正常",
-               spark=ui_spark(cum_path.tolist(), forecast_color, ref=cum_budget.tolist())),
+               tx(f"已用 {fpct(actual_pct)}｜應有 {fpct(budget_pace_pct)}", f"{fpct(actual_pct)} used · plan {fpct(budget_pace_pct)}"),
+               "activity", actual_color, glow=pace_gap > 2,
+               delta=ui_delta(tx(f"{pace_gap:+.1f} 個百分點", f"{pace_gap:+.1f} pp"), actual_color if pace_gap > 2 else ok_color,
+                              "up" if pace_gap >= 0 else "down"),
+               viz=ui_area(cum_actual.tolist(), actual_color, ref=cum_budget.tolist())),
+        ui_kpi(tx("年底預測支出", "Year-end forecast"), fmc(tf_sum), show_status(forecast_status),
+               "trending", forecast_color, glow=forecast_status != "預算正常",
+               delta=ui_delta(fpct(variance_pct, signed=True), forecast_color, "up" if variance_pct >= 0 else "down"),
+               viz=ui_ring(tf_sum / tb_sum * 100 if tb_sum else 0, ACCENT, over_color)
+                   + f'<div class="ring-lb">{tx("預測使用率", "Forecast utilization")}<b>{fmc(low_total)}</b><b>– {fmc(high_total).replace("NT$ ", "")}</b>'
+                     f'{tx("P80 年底區間", "P80 year-end range")}</div>',
+               ring=True),
     ]
+    gap_viz = ui_bars(monthly_gap.tolist(), [rgba(over_color if v > 0 else ok_color, .85 if c else .35)
+                                             for v, c in zip(monthly_gap, closed)])
+    over_delta = ui_delta(tx(f"{over_count} 個部門超支", f"{over_count} dept{'s' if over_count != 1 else ''} over"),
+                          over_color if over_count else ok_color)
     if total_variance > 0:
         kpis.append(ui_kpi(tx("預估年底缺口", "Projected shortfall"), fmc(total_variance),
-                           tx(f"尚未使用預算 {fmc(tb_sum - ta_sum)}", f"Unused budget today {fmc(tb_sum - ta_sum)}"),
-                           "🔥", STATUS_COLORS["高風險超支"], glow=True))
+                           tx(f"尚未使用 {fmc(tb_sum - ta_sum)}", f"Unused today {fmc(tb_sum - ta_sum)}"),
+                           "alert", over_color, glow=True, delta=over_delta, viz=gap_viz))
     else:
         kpis.append(ui_kpi(tx("預估年底結餘", "Projected headroom"), fmc(abs(total_variance)),
-                           tx(f"尚未使用預算 {fmc(tb_sum - ta_sum)}", f"Unused budget today {fmc(tb_sum - ta_sum)}"),
-                           "🛡️", STATUS_COLORS["預算正常"]))
-    st.markdown(f'<div class="kpi-grid">{"".join(kpis)}</div>', unsafe_allow_html=True)
+                           tx(f"尚未使用 {fmc(tb_sum - ta_sum)}", f"Unused today {fmc(tb_sum - ta_sum)}"),
+                           "shield", ok_color, delta=over_delta, viz=gap_viz))
+    st.markdown(f'<div class="kpi-wrap"><div class="kpi-grid">{"".join(kpis)}</div></div>', unsafe_allow_html=True)
     ai_brief_panel("overview")
 
-    # ---- 3. 部門燈號清單 + 優先處理 ----
+    # ---- 3. 主視覺：累計支出路徑（漸層面積＋預測扇形區間）＋ 預算狀態環圖 ----
+    hero_col, donut_col = st.container(key="wrap-hero").columns([2.15, 1], gap="medium")
+    with hero_col:
+        path_fig = go.Figure()
+        if data_cutoff_month < 12:
+            # 預測扇形：從結算月往年底逐步展開到 P80 區間
+            start = max(data_cutoff_month, 1)
+            fan_x = MONTHS[start - 1:]
+            frac = np.linspace(0, 1, len(fan_x)) if len(fan_x) > 1 else np.array([1.0])
+            fan_mid = cum_path.iloc[start - 1:].to_numpy()
+            path_fig.add_scatter(x=fan_x, y=fan_mid + frac * (high_total - tf_sum), mode="lines", line=dict(width=0),
+                                 showlegend=False, hoverinfo="skip", hovertemplate="skip")
+            path_fig.add_scatter(x=fan_x, y=fan_mid - frac * (tf_sum - low_total), mode="lines", line=dict(width=0),
+                                 fill="tonexty", fillcolor=rgba(forecast_color, .16), name=tx("P80 預測區間", "P80 range"),
+                                 hoverinfo="skip", hovertemplate="skip")
+        path_fig.add_scatter(x=MONTHS, y=cum_budget, name=tx("累計預算", "Cumulative budget"), mode="lines",
+                             line=dict(color=MUTED, width=2, dash="dot"))
+        if data_cutoff_month:
+            path_fig.add_scatter(x=MONTHS[:data_cutoff_month], y=cum_actual.iloc[:data_cutoff_month],
+                                 name=tx("累計實際", "Cumulative actual"), mode="lines",
+                                 line=dict(color=ACCENT, width=3.2, shape="spline", smoothing=.5),
+                                 fill="tozeroy", fillgradient=dict(type="vertical", start=0, stop=float(cum_actual.max()),
+                                                                   colorscale=[[0, rgba(ACCENT, 0)], [1, rgba(ACCENT, .42)]]))
+            path_fig.add_scatter(x=[data_cutoff_month], y=[float(cum_actual.iloc[data_cutoff_month - 1])], mode="markers",
+                                 showlegend=False, hoverinfo="skip", hovertemplate="skip",
+                                 marker=dict(size=11, color=ACCENT, line=dict(color=rgba(ACCENT, .35), width=7)))
+        if data_cutoff_month < 12:
+            path_fig.add_scatter(x=fan_x, y=fan_mid, name=tx("預測路徑", "Forecast path"), mode="lines",
+                                 line=dict(color=forecast_color, width=2.6, dash="dash", shape="spline", smoothing=.5))
+        if data_cutoff_month:
+            path_fig.add_vline(x=data_cutoff_month + .5, line=dict(color=BORDER, width=1, dash="dot"))
+            path_fig.add_annotation(x=data_cutoff_month + .5, y=.02, yref="paper", text=tx("實際 ◀ ｜ ▶ 預測", "Actual ◀ | ▶ Forecast"), showarrow=False,
+                                    xanchor="center", yanchor="bottom", font=dict(size=11, color=MUTED), bgcolor=PANEL)
+        gap_text = (tx("預估超支", "Projected overspend") if total_variance > 0 else tx("預估結餘", "Projected headroom")) + f" {fmc(abs(total_variance))}"
+        path_fig.add_annotation(
+            x=12, y=max(tf_sum, tb_sum), text=f"<b>{tx('年底預估', 'Year-end')} {fmc(tf_sum)}</b><br>{tx('年度預算', 'Budget')} {fmc(tb_sum)}<br><b>{gap_text}</b>",
+            showarrow=True, arrowhead=0, arrowcolor=forecast_color, ax=-90, ay=-34, xanchor="right", align="right",
+            bgcolor=rgba(forecast_color, .12), bordercolor=rgba(forecast_color, .5), borderpad=6,
+            font=dict(color=TEXT, size=12),
+        )
+        style_fig(path_fig, height=400)
+        path_fig.update_layout(legend_traceorder="normal")  # tonexty 會讓 Plotly 自動反轉圖例順序
+        path_fig.update_xaxes(tickmode="array", tickvals=MONTHS, ticktext=[tx(f"{m}月", f"M{m}") for m in MONTHS], showgrid=False)
+        money_axis(path_fig, max_hint=max(high_total, tb_sum))
+        show_chart(path_fig, title=tx("全公司照目前速度花，年底會落在哪裡？", "At the current pace, where will total spending land?"), key="overview_path", help_text=tx(
+            "藍色漸層＝已結算月份的累計實際支出；彩色虛線＝依季節性與 Run-rate 推估的剩餘月份；灰色點線＝累計預算。虛線終點高於灰線即代表年底超支；扇形色帶為歷史回測 P80 區間。",
+            "Gradient = cumulative closed actuals; dashed = remaining months estimated from seasonality and run rate; dotted = cumulative budget. The fan shows the backtest P80 range."))
+    with donut_col:
+        # 依燈號加總年度預算：一眼看出多少預算落在風險部門
+        budget_by_status = analysis_res.groupby("Status").Budget_Full.sum().reindex(STATUS_ORDER).fillna(0.0)
+        budget_by_status = budget_by_status[budget_by_status > 0]
+        donut = go.Figure(go.Pie(
+            labels=[show_status(s) for s in budget_by_status.index], values=budget_by_status.to_numpy(),
+            marker=dict(colors=[STATUS_COLORS[s] for s in budget_by_status.index], line=dict(color=PANEL, width=3)),
+            hole=.7, sort=False, direction="clockwise", textinfo="none", domain=dict(y=[.14, 1]),
+            customdata=[fmc(v) for v in budget_by_status], hovertemplate="<b>%{label}</b><br>%{customdata} · %{percent}<extra></extra>",
+        ))
+        at_risk_share = float(budget_by_status.reindex(["高風險超支", "需注意"]).fillna(0).sum() / tb_sum * 100) if tb_sum else 0.0
+        donut.add_annotation(text=f"<b style='font-size:26px'>{at_risk_share:.0f}%</b><br><span style='font-size:11.5px;color:{MUTED}'>"
+                                  f"{tx('預算落在風險部門', 'of budget at risk')}</span>",
+                             x=.5, y=.57, xref="paper", yref="paper", showarrow=False, font=dict(color=TEXT))
+        style_fig(donut, height=400)
+        donut.update_layout(margin=dict(l=8, r=8, t=16, b=8), legend=dict(y=0, yanchor="bottom", x=.5, xanchor="center"))
+        show_chart(donut, title=tx("預算狀態分布", "Budget by status"), key="overview_donut", help_text=tx(
+            "各燈號部門的年度預算合計占比；中央數字＝「高風險超支」與「需注意」部門的預算占比。",
+            "Share of annual budget held by departments in each status; the centre figure is the share in High-risk and Monitor departments."))
+
+    # ---- 4. 部門燈號清單 + 優先處理 ----
     ordered = analysis_res.assign(_sev=analysis_res.Status.map(STATUS_SEVERITY).fillna(3)).sort_values(
         ["_sev", "Forecast_Var"], ascending=[True, False])
-    list_col, focus_col = st.columns([1.65, 1], gap="medium")
+    list_col, focus_col = st.container(key="wrap-list").columns([1.65, 1], gap="medium")
     with list_col:
         section(tx("各部門預算水位", "Department budget gauge"), help_text=tx(
             "實色＝已經花掉的預算比例；斜紋＝依預測到年底還會再花的比例；白色虛線＝100% 年度預算。斜紋超過虛線就代表年底會超支。依嚴重度排序。",
@@ -1825,7 +2112,7 @@ if active_nav_id == "overview":
         section(tx("優先處理", "Priority review"))
         attention_rows = ordered[ordered.Status != "預算正常"]
         if attention_rows.empty:
-            st.markdown(f'<div class="okcard">✅ {tx("目前沒有需要優先處理的部門。", "No departments currently need priority review.")}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="okcard">{icon("check", 17)} {tx("目前沒有需要優先處理的部門。", "No departments currently need priority review.")}</div>', unsafe_allow_html=True)
         else:
             options = attention_rows.Department.tolist()
             if st.session_state.get("focus_dept") not in options:
@@ -1849,49 +2136,50 @@ if active_nav_id == "overview":
                 f'<div class="focus-amt">{fmc(focus_row.Forecast_Var, signed=True)}</div>'
                 f'<div class="focus-meta">{tx("年底預測差異", "Year-end forecast variance")} {fpct(focus_row.Forecast_Pct, signed=True)} · '
                 f'{tx("預測", "Forecast")} {fmc(focus_row.Forecast_EOY)} / {tx("預算", "Budget")} {fmc(focus_row.Budget_Full)}</div>'
-                f'<ul class="ev">{evidence}</ul><div class="next">➜ {next_step}</div></div>',
+                f'<ul class="ev">{evidence}</ul><div class="next">{icon("arrow", 14)} {next_step}</div></div>',
                 unsafe_allow_html=True,
             )
 
-    # ---- 4. 主圖：累計支出路徑 ----
-    path_fig = go.Figure()
-    path_fig.add_scatter(x=MONTHS, y=cum_budget, name=tx("累計預算", "Cumulative budget"), mode="lines",
-                         line=dict(color=MUTED, width=2, dash="dot"))
-    if data_cutoff_month:
-        path_fig.add_scatter(x=MONTHS[:data_cutoff_month], y=cum_actual.iloc[:data_cutoff_month],
-                             name=tx("累計實際", "Cumulative actual"), mode="lines+markers",
-                             line=dict(color=ACCENT, width=3.2), marker=dict(size=6),
-                             fill="tozeroy", fillcolor=rgba(ACCENT, .10))
-    if data_cutoff_month < 12:
-        start = max(data_cutoff_month, 1)
-        forecast_x = MONTHS[start - 1:]
-        path_fig.add_scatter(x=forecast_x, y=cum_path.iloc[start - 1:], name=tx("預測路徑", "Forecast path"),
-                             mode="lines+markers", line=dict(color=forecast_color, width=2.6, dash="dash"),
-                             marker=dict(size=5, symbol="circle-open"))
-        low_total, high_total = float(analysis_res.Forecast_Low.sum()), float(analysis_res.Forecast_High.sum())
-        path_fig.add_scatter(x=[12], y=[tf_sum], mode="markers", name=tx("年底預測區間", "Year-end range"),
-                             marker=dict(size=10, color=forecast_color),
-                             error_y=dict(type="data", symmetric=False, array=[high_total - tf_sum],
-                                          arrayminus=[tf_sum - low_total], color=forecast_color, thickness=1.5, width=6))
-    if data_cutoff_month:
-        path_fig.add_vline(x=data_cutoff_month + .5, line=dict(color=BORDER, width=1, dash="dot"))
-        path_fig.add_annotation(x=data_cutoff_month + .5, y=1, yref="paper", text=tx("實際 ◀ ｜ ▶ 預測", "Actual ◀ | ▶ Forecast"), showarrow=False,
-                                xanchor="center", yanchor="bottom", font=dict(size=11, color=MUTED))
-    gap_text = (tx("預估超支", "Projected overspend") if total_variance > 0 else tx("預估結餘", "Projected headroom")) + f" {fmc(abs(total_variance))}"
-    path_fig.add_annotation(
-        x=12, y=max(tf_sum, tb_sum), text=f"<b>{tx('年底預估', 'Year-end')} {fmc(tf_sum)}</b><br>{tx('年度預算', 'Budget')} {fmc(tb_sum)}<br><b>{gap_text}</b>",
-        showarrow=True, arrowhead=0, arrowcolor=forecast_color, ax=-90, ay=-34, xanchor="right", align="right",
-        bgcolor=rgba(forecast_color, .12), bordercolor=rgba(forecast_color, .5), borderpad=6,
-        font=dict(color=TEXT, size=12),
-    )
-    style_fig(path_fig, height=380)
-    path_fig.update_xaxes(tickmode="array", tickvals=MONTHS, ticktext=[tx(f"{m}月", f"M{m}") for m in MONTHS])
-    money_axis(path_fig, max_hint=max(float(analysis_res.Forecast_High.sum()), tb_sum))
-    show_chart(path_fig, title=tx("全公司照目前速度花，年底會落在哪裡？", "At the current pace, where will total spending land?"), key="overview_path", help_text=tx(
-        "藍色實線＝已結算月份的累計實際支出；彩色虛線＝依季節性與 Run-rate 推估的剩餘月份；灰色點線＝累計預算。虛線終點高於灰線即代表年底超支；誤差線為歷史回測 P80 區間。",
-        "Solid = cumulative closed actuals; dashed = remaining months estimated from seasonality and run rate; dotted = cumulative budget. The year-end whisker shows the backtest P80 range."))
+    # ---- 5. 部門 × 月份熱力圖：年底突擊消化、一次性支出一眼可見 ----
+    heat_years = [y for y in (selected_year, selected_year - 1) if y in available_years]
+    with card("overview_heat"):
+        title_col, year_col = st.columns([3, 1.2], vertical_alignment="center")
+        with title_col:
+            st.markdown(f'<div class="chart-title">{tx("哪個部門、哪個月花得比預算多？", "Which department overspent in which month?")}</div>',
+                        unsafe_allow_html=True, help=tx(
+                "每格＝該月實際支出相對當月預算的差異（%）；紅色＝超支、綠色＝低於預算。切到前一年度可看到完整 12 個月，年底（11–12 月）整排轉紅即為年末消化預算。",
+                "Each cell = that month's actual vs. its budget (%); red = over, green = under. Switch to the prior year to see all 12 months — a red Nov–Dec column signals year-end flush."))
+        with year_col:
+            heat_year = st.segmented_control(
+                tx("年度", "Year"), heat_years, default=heat_years[0], required=True, key="overview_heat_year",
+                format_func=lambda y: f"FY{y}", label_visibility="collapsed", width="stretch",
+            ) or heat_years[0]
+        heat_frame = df_db[(df_db.Year == heat_year) & df_db.Department.isin(selected_depts)]
+        heat_ratio = heat_frame.assign(Pct=(heat_frame.Actual / heat_frame.Budget.replace(0, np.nan) - 1) * 100).pivot_table(
+            index="Department", columns="Month", values="Pct", aggfunc="first", dropna=False).reindex(index=ordered.Department[::-1], columns=MONTHS)
+        heat_notes = heat_frame.assign(Note=heat_frame.EventNote.fillna("").astype(str).map(lambda n: show_event(n) if n.strip() else "")).pivot_table(
+            index="Department", columns="Month", values="Note", aggfunc="first").reindex(index=heat_ratio.index, columns=MONTHS).fillna("")
+        heat_fig = go.Figure(go.Heatmap(
+            z=heat_ratio.to_numpy(), x=MONTHS, y=[show_dept(d) for d in heat_ratio.index],
+            zmid=0, zmin=-30, zmax=30, xgap=3, ygap=3, showscale=False,
+            colorscale=[[0, ok_color], [.5, TRACK], [1, over_color]],
+            text=heat_ratio.map(lambda v: "" if pd.isna(v) else f"{v:+.0f}%").to_numpy(),
+            texttemplate="%{text}", textfont=dict(size=11, color=TEXT), customdata=heat_notes.to_numpy(),
+            hovertemplate="<b>%{y}</b> · " + tx("%{x} 月", "M%{x}") + "<br>" + tx("相較當月預算", "vs. monthly budget") + " %{text}<br>%{customdata}<extra></extra>",
+        ))
+        style_fig(heat_fig, height=46 * len(heat_ratio) + 70, legend=False)
+        heat_fig.update_xaxes(tickmode="array", tickvals=MONTHS, ticktext=[tx(f"{m}月", f"M{m}") for m in MONTHS],
+                              showgrid=False, side="top")
+        heat_fig.update_yaxes(showgrid=False)
+        heat_fig.update_layout(margin=dict(l=8, r=8, t=8, b=8))
+        open_months = 12 - int(heat_frame[heat_frame.Actual.notna()].Month.max()) if heat_frame.Actual.notna().any() else 12
+        if open_months:
+            heat_fig.add_vrect(x0=12.5 - open_months, x1=12.5, fillcolor=rgba(MUTED, .08), line_width=0,
+                               annotation_text=tx("尚未結算", "Not closed"), annotation_position="inside top",
+                               annotation_font=dict(size=11, color=MUTED))
+        st.plotly_chart(heat_fig, width="stretch", config=PLOT_CONFIG, theme=None, key="chart-overview_heat")
 
-    # ---- 5. 漸進式揭露：詳細拆解預設折疊 ----
+    # ---- 6. 漸進式揭露：詳細拆解預設折疊 ----
     with st.expander(tx("查看詳細預算拆解與圖表", "View detailed budget breakdown and charts"), icon=":material/table_chart:"):
         names = ordered.Department.map(show_dept)
 
@@ -2162,7 +2450,7 @@ if active_nav_id == "forecast_risk":
             unsafe_allow_html=True,
         )
 
-        wf_col, dept_fc_col = st.columns([1, 1.5], gap="medium")
+        wf_col, dept_fc_col = st.container(key="wrap-forecast").columns([1, 1.5], gap="medium")
         with wf_col:
             wf = go.Figure(go.Waterfall(
                 x=[tx("① 已花", "① Spent"), tx("② 預計再花", "② Still to spend"), tx("③ 年底合計", "③ Year-end total")],
@@ -2245,8 +2533,8 @@ if active_nav_id == "forecast_risk":
                 tx("對預算差額", "Vs. budget"): to_m((combined - monthly_budget).where(has_data)).to_numpy(),
                 tx("資料狀態", "Data status"): [
                     tx("實際＋預估", "Actual + estimate") if pd.notna(monthly_actual.loc[m]) and monthly_estimate.loc[m] > 0
-                    else tx("✅ 已結算", "✅ Closed") if pd.notna(monthly_actual.loc[m])
-                    else tx("🔮 預估", "🔮 Estimated") if monthly_estimate.loc[m] > 0
+                    else tx("已結算", "Closed") if pd.notna(monthly_actual.loc[m])
+                    else tx("預估", "Estimated") if monthly_estimate.loc[m] > 0
                     else tx("尚無資料", "No data")
                     for m in MONTHS
                 ],
@@ -2283,13 +2571,14 @@ if active_nav_id == "forecast_risk":
         }
         ai_brief_panel("alerts")
         summary_cols = st.columns(3)
+        status_marks = {"高風險超支": ":red[:material/error:]", "需注意": ":orange[:material/warning:]", "執行落後": ":blue[:material/schedule:]"}
         for col, status in zip(summary_cols, ["高風險超支", "需注意", "執行落後"]):
             rows = alert_rows[alert_rows.Status == status]
-            col.metric(f"{STATUS_EMOJI[status]} {show_status(status)}", f"{len(rows)}",
+            col.metric(f"{status_marks[status]} {show_status(status)}", f"{len(rows)}",
                        delta=fmc(float(rows.Forecast_Var.sum()), signed=True) if not rows.empty else None,
                        delta_color="inverse", border=True)
         if alert_rows.empty:
-            st.markdown(f'<div class="okcard">✅ {tx("目前沒有符合預警條件的部門。", "No departments currently meet the alert criteria.")}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="okcard">{icon("check", 17)} {tx("目前沒有符合預警條件的部門。", "No departments currently meet the alert criteria.")}</div>', unsafe_allow_html=True)
         for row in alert_rows.itertuples():
             color = STATUS_COLORS[row.Status]
             evidence = "".join(f"<li>{item}</li>" for item in risk_evidence(df_db, selected_year, row))
@@ -2301,7 +2590,7 @@ if active_nav_id == "forecast_risk":
                 f'<div class="acard" style="--c:{color}"><div class="acard-head">{ui_badge(row.Status)}'
                 f'<span class="acard-dept">{show_dept(row.Department)}</span><span class="acard-amt">{fmc(row.Forecast_Var, signed=True)}</span></div>'
                 f'<div class="acard-msg">{message}</div><ul class="ev">{evidence}</ul>'
-                f'<div class="next">➜ {actions[row.Status]}</div></div>',
+                f'<div class="next">{icon("arrow", 14)} {actions[row.Status]}</div></div>',
                 unsafe_allow_html=True,
             )
 
@@ -2666,11 +2955,11 @@ if active_nav_id == "scenarios_quality":
             (tx("實際支出月份連續無斷層", "No gaps in reported months"), True),
         ]
         rows_html = "".join(
-            f'<div class="check"><span>{"✅" if ok else "⚠️"}</span><span>{label}</span>'
+            f'<div class="check"><span style="color:{STATUS_COLORS["預算正常"] if ok else STATUS_COLORS["需注意"]}">{icon("check" if ok else "alert", 16)}</span><span>{label}</span>'
             f'<b style="color:{STATUS_COLORS["預算正常"] if ok else STATUS_COLORS["需注意"]}">{tx("通過", "Pass") if ok else tx("需檢查", "Review")}</b></div>'
             for label, ok in checks
         )
-        rows_html += f'<div class="check"><span>🗂️</span><span>{tx("資料來源", "Data source")}</span><b>{data_source}</b></div>'
+        rows_html += f'<div class="check"><span style="color:{MUTED}">{icon("database", 16)}</span><span>{tx("資料來源", "Data source")}</span><b>{data_source}</b></div>'
         st.markdown(f'<div class="slist">{rows_html}</div>', unsafe_allow_html=True)
         st.caption(tx("費用科目、供應商與採購單欄位由部門月實際支出合成分攤，僅供競賽情境展示。上傳 CSV 時會先經過欄位、月份完整性與數值防呆檢核，可直接對接 ERP／財務系統匯出檔。",
                       "Categories, vendors and POs are synthetic allocations for the demo. Uploaded CSVs are validated for columns, month completeness and values, so ERP or finance-system exports can be plugged in directly."))
@@ -2711,7 +3000,7 @@ if active_nav_id == "ai_assistant":
         # 點選後立即清空選取，讓同一個問題可以再次點選。
         st.session_state.pending_prompt = st.session_state.pop("quick_prompt", None)
 
-    prompt_row = st.columns([5, 1])
+    prompt_row = st.container(key="nowrap-prompt").columns([5, 1])
     with prompt_row[0]:
         st.pills(tx("快速提問", "Quick questions"), prompts, key="quick_prompt", label_visibility="collapsed", on_change=queue_quick_prompt, wrap=True)
     with prompt_row[1]:
@@ -2720,7 +3009,7 @@ if active_nav_id == "ai_assistant":
             st.rerun()
 
     for i, message in enumerate(st.session_state.chat_messages):
-        with st.chat_message(message["role"], avatar="🧑‍💼" if message["role"] == "user" else "✨"):
+        with st.chat_message(message["role"], avatar=":material/person:" if message["role"] == "user" else ":material/auto_awesome:"):
             st.markdown(md_safe(message["content"]))
             if message.get("source"):
                 st.caption(message["source"])
@@ -2734,9 +3023,9 @@ if active_nav_id == "ai_assistant":
 
     if user_input:
         st.session_state.chat_messages.append({"role": "user", "content": user_input})
-        with st.chat_message("user", avatar="🧑‍💼"):
+        with st.chat_message("user", avatar=":material/person:"):
             st.markdown(md_safe(user_input))
-        with st.chat_message("assistant", avatar="✨"):
+        with st.chat_message("assistant", avatar=":material/auto_awesome:"):
             source = tx("內建規則", "Built-in rules")
             if ai_available():
                 conversation = st.session_state.chat_messages[-12:]
@@ -2751,7 +3040,7 @@ if active_nav_id == "ai_assistant":
                 except Exception as err:
                     reply = local_budget_reply(user_input, analysis_res, selected_year)
                     source = tx("內建規則（模型額度已用完或無法連線）", "Built-in rules (model quota used up or unreachable)")
-                    st.caption(f"ℹ️ {err}")
+                    st.caption(f":material/info: {err}")
                 st.markdown(md_safe(reply))
             else:
                 reply = local_budget_reply(user_input, analysis_res, selected_year)
