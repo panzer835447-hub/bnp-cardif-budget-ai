@@ -6,3 +6,5 @@ __pycache__/
 .claude/
 .vscode/
 patch_ui_v2.py
+_上傳到GitHub/
+*.code-workspace
