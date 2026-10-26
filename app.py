@@ -886,6 +886,45 @@ def backtest_forecasts(data, target_year, target_depts, cutoff_month):
             })
     return pd.DataFrame(rows)
 
+@st.cache_data(show_spinner=False, max_entries=32)
+def early_warning_replay(data, target_year, target_depts, thresholds_key):
+    """Replay a closed year month by month: the light this system would have shown at each month-end,
+    next to the traditional YTD variance report (actual ÷ budget to date). thresholds_key only keys the cache."""
+    rows = []
+    for department in target_depts:
+        year_data = data[(data.Year == target_year) & (data.Department == department)].sort_values("Month")
+        if year_data.Month.nunique() != 12 or year_data.Actual.isna().any():
+            continue
+        budget, actual = float(year_data.Budget.sum()), float(year_data.Actual.sum())
+        if not budget:
+            continue
+        cum_actual, cum_budget = year_data.Actual.cumsum().to_numpy(), year_data.Budget.cumsum().to_numpy()
+        for month in range(1, 12):
+            forecast = forecast_for_year(data, target_year, department, month)[0]
+            ytd_rate = cum_actual[month - 1] / cum_budget[month - 1] if cum_budget[month - 1] else 1.0
+            rows.append({
+                "Department": department, "Month": month,
+                "Forecast_Use": forecast / budget * 100, "Status": classify_status(forecast / budget),
+                "Ytd_Rate": ytd_rate * 100, "Ytd_Status": classify_status(ytd_rate),
+                "Final_Use": actual / budget * 100, "Final_Status": classify_status(actual / budget),
+            })
+    return pd.DataFrame(rows)
+
+def alert_direction(status):
+    return "over" if status in ("高風險超支", "需注意") else "under" if status == "執行落後" else None
+
+def first_steady_alert(statuses, final_status):
+    """First month from which the light points the same way as the year-end result and stays that way to month 11."""
+    target, first = alert_direction(final_status), None
+    if target is None:
+        return None
+    for month, status in statuses:
+        if alert_direction(status) == target:
+            first = first or month
+        else:
+            first = None
+    return first
+
 def risk_evidence(data, target_year, row):
     reasons = []
     latest_month = data.loc[(data.Year == target_year) & (data.Department == row.Department) & data.Actual.notna(), "Month"].max()
@@ -2272,6 +2311,84 @@ AI_RULES = (
     "Reallocation ideas are recommendations, never approved transactions. Keep answers concise and use short bullet lists.\n"
 )
 
+def chat_chart_rules():
+    """Ask the model to pick the supporting chart itself, as a tag the app strips and draws (keyword matching is only the fallback)."""
+    depts = ", ".join(show_dept(d) for d in selected_depts)
+    accounts = ", ".join(show_account(a) for a in ACCOUNT_EN)
+    return (
+        "\nCHART: after your answer, add ONE last line choosing the chart that best supports it, exactly in this form: "
+        "<chart>{\"type\": ...}</chart>. Choose one of: "
+        "{\"type\":\"forecast\"} = year-end variance of every department; "
+        "{\"type\":\"monthly\",\"department\":D} = one department's monthly budget vs actual; "
+        "{\"type\":\"account\",\"account\":C,\"department\":D or null,\"quarter\":1-4 or null} = one expense category by month; "
+        "{\"type\":\"dimension\",\"dimension\":\"Project\"|\"Vendor\"|\"Cost_Center\",\"account\":C or null,\"department\":D or null,\"quarter\":1-4 or null} = spending by project, vendor or cost centre; "
+        "{\"type\":\"none\"} when no chart helps (greetings, definitions, general concepts). "
+        f"D must be one of: {depts}. C must be one of: {accounts}. Never mention the tag in your text.\n"
+    )
+
+_CHART_TAG_RE = re.compile(r"<chart>\s*(\{.*?\})\s*</chart>", re.S)
+
+def parse_chart_tag(reply):
+    """Split the model's chart choice off its answer. Returns (clean text, chart_spec or None, parsed?)."""
+    match = _CHART_TAG_RE.search(reply)
+    clean = _CHART_TAG_RE.sub("", reply)
+    clean = re.sub(r"</?chart>", "", clean).strip()
+    if not match:
+        return clean, None, False
+    try:
+        spec = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return clean, None, False
+    lookup = lambda names, value: names.get(str(value or "").strip().casefold())
+    dept_names = {}
+    for d in selected_depts:
+        base = d.split(" (")[0]
+        for alias in (d, base, show_dept(d), DEPT_EN.get(base, "")):
+            if alias:
+                dept_names[alias.casefold()] = d
+    account_names = {alias.casefold(): a for a in ACCOUNT_EN for alias in (a, show_account(a), ACCOUNT_EN[a])}
+    kind = spec.get("type")
+    dept, account = lookup(dept_names, spec.get("department")), lookup(account_names, spec.get("account"))
+    quarter = spec.get("quarter") if spec.get("quarter") in (1, 2, 3, 4) else None
+    if kind == "none":
+        return clean, None, True
+    if kind == "forecast":
+        return clean, {"type": "forecast"}, True
+    if kind == "monthly" and dept:
+        return clean, {"type": "monthly", "department": dept}, True
+    if kind == "account" and account:
+        return clean, {"type": "account", "account": account, "departments": [dept] if dept else selected_depts, "quarter": quarter}, True
+    if kind == "dimension" and spec.get("dimension") in ("Project", "Vendor", "Cost_Center"):
+        return clean, {"type": "dimension", "dimension": spec["dimension"], "account": account,
+                       "departments": [dept] if dept else selected_depts, "quarter": quarter}, True
+    return clean, None, False
+
+def keyword_chart_spec(user_input):
+    """Fallback chart choice by keywords, used when the model did not pick one (built-in rules, or a missing/malformed tag)."""
+    q = user_input.casefold()
+    chart_terms = ["圖", "趨勢", "走勢", "圖表", "chart", "plot", "trend", "graph", "哪個部門", "哪些部門", "which department", "which departments", "overspend", "risk", "專案", "供應商", "成本中心", "project", "vendor", "cost center"]
+    chart_terms += [term.casefold() for dept in selected_depts for term in (dept.split(" (")[0], DEPT_EN.get(dept.split(" (")[0], "")) if term]
+    chart_terms += [term.casefold() for account in ACCOUNT_EN for term in (account, ACCOUNT_EN[account])]
+    if not any(term in q for term in chart_terms):
+        return None
+    matched_department = next((d for d in selected_depts if d.split(" (")[0].casefold() in q or DEPT_EN.get(d.split(" (")[0], "").casefold() in q), None)
+    matched_account = next((account for account in ACCOUNT_EN if account.casefold() in q or ACCOUNT_EN[account].casefold() in q), None)
+    dimension_aliases = {
+        "Project": ("專案", "project"), "Vendor": ("供應商", "廠商", "vendor", "supplier"),
+        "Cost_Center": ("成本中心", "cost center"),
+    }
+    matched_dimension = next((dim for dim, terms in dimension_aliases.items() if any(term in q for term in terms)), None)
+    quarter = next((n for n, terms in {1: ("第一季", "q1", "first quarter"), 2: ("第二季", "q2", "second quarter"), 3: ("第三季", "q3", "third quarter"), 4: ("第四季", "q4", "fourth quarter")}.items() if any(term in q for term in terms)), None)
+    if matched_dimension:
+        return {"type": "dimension", "dimension": matched_dimension, "account": matched_account,
+                "departments": [matched_department] if matched_department else selected_depts, "quarter": quarter}
+    if matched_account:
+        return {"type": "account", "account": matched_account,
+                "departments": [matched_department] if matched_department else selected_depts, "quarter": quarter}
+    if matched_department:
+        return {"type": "monthly", "department": matched_department}
+    return {"type": "forecast"}
+
 def ai_chain():
     """Configured model services in try order: the preferred one first, then every other service that has a key."""
     if ai_provider == "rules":
@@ -2348,6 +2465,150 @@ def merge_brief(llm_text):
         if pos >= 0:
             return llm_text[:pos].rstrip() + "\n\n" + alerts + "\n" + llm_text[pos:]
     return llm_text.rstrip() + "\n\n" + alerts
+
+# ---- AI 數字查核：模型回答裡的每個金額與百分比，都回頭比對交給模型的資料 ----
+_AMOUNT_RE = re.compile(r"(?:NT\$\s?)?(?<![\d.])(\d[\d,]*(?:\.\d+)?)\s*(億|萬|billion|million|[BMK](?![A-Za-z]))")
+_PCT_RE = re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)\s*(%|％|個百分點|pp(?![A-Za-z]))")
+_AMOUNT_UNITS = {"億": 1e8, "萬": 1e4, "B": 1e9, "billion": 1e9, "M": 1e6, "million": 1e6, "K": 1e3}
+_TABLE_INT_RE = re.compile(r"(?<![\d.])(\d+)(?![\d.%月])")
+
+def _number_tokens(text):
+    """(start, end, kind, value, tolerance) for every amount / percentage in the text; tolerance = half the last shown digit."""
+    found = []
+    for m in _AMOUNT_RE.finditer(text):
+        digits, unit = m.group(1).replace(",", ""), _AMOUNT_UNITS[m.group(2)]
+        decimals = len(digits.split(".")[1]) if "." in digits else 0
+        found.append((m.start(), m.end(), "amount", float(digits) * unit, .5 * unit / 10 ** decimals))
+    for m in _PCT_RE.finditer(text):
+        decimals = len(m.group(1).split(".")[1]) if "." in m.group(1) else 0
+        found.append((m.start(), m.end(), "pct", float(m.group(1)), .5 / 10 ** decimals))
+    return sorted(found)
+
+@st.cache_data(show_spinner=False, max_entries=16)
+def _reference_numbers(facts_json):
+    """Every figure the model was given, plus values one step away from them (sums, differences, ratios, month ranges)."""
+    facts = json.loads(facts_json)
+    tables = facts.pop("full_database_tables", {})
+    amounts, pcts, pool = [], [], []
+
+    def walk(node):
+        if isinstance(node, dict):
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+        elif isinstance(node, str):
+            for _, _, kind, value, tol in _number_tokens(node):
+                (amounts if kind == "amount" else pcts).append((value, tol))
+                if kind == "amount":
+                    pool.append(value)
+        elif isinstance(node, (int, float)) and not isinstance(node, bool):
+            pcts.append((float(node), .05))
+    walk(facts)
+    derived = []
+    for name, table in tables.items():
+        if not isinstance(table, str) or name == "unit_note":
+            continue
+        for line in table.splitlines()[1:]:
+            cells = line.split("|")
+            for cell in cells[2:]:
+                for _, _, kind, value, tol in _number_tokens(cell):
+                    if kind == "pct":
+                        pcts.append((value, tol))
+                ints = [float(v) * 1e4 for v in _TABLE_INT_RE.findall(cell)]
+                amounts.extend((v, .5e4) for v in ints)
+                if name == "annual_by_department":
+                    pool.extend(ints[:2])
+                if name == "monthly_budget_and_actual" and len(ints) >= 12:
+                    run = np.cumsum([0.0] + ints[:12])
+                    derived += [run[j] - run[i] for i in range(12) for j in range(i + 2, 13)]  # 任意連續月份合計（季、上半年…）
+    pool = np.unique(np.array(pool, dtype=float))
+    pool = pool[pool > 0]
+    ratios = np.empty(0)
+    if len(pool):
+        r = pool[:, None] / pool[None, :] * 100
+        ratios = np.unique(np.concatenate([r.ravel(), (r - 100).ravel()]))
+    for constant in (55, 45, 80, 100, 15, *(st.session_state.get(k, d) for k, d in (("thr_watch_pct", 102), ("thr_high_pct", 105), ("thr_lag_pct", 90)))):
+        pcts.append((float(constant), .05))
+    amount_values = np.array(sorted(v for v, _ in amounts))
+    return {
+        "amounts": amount_values, "amount_tol": .5e4, "pool": pool,
+        "derived": np.unique(np.array(derived, dtype=float)), "pcts": np.array(sorted(v for v, _ in pcts)), "ratios": ratios,
+    }
+
+def _near(sorted_values, value, tol):
+    if not len(sorted_values):
+        return False
+    i = np.searchsorted(sorted_values, value)
+    return any(abs(sorted_values[j] - value) <= tol for j in (i - 1, i) if 0 <= j < len(sorted_values))
+
+def _pair_hit(sorted_values, value, tol):
+    """Is value the sum or difference of two figures in sorted_values? (vectorised over every first operand)"""
+    if len(sorted_values) < 2:
+        return False
+    for targets in (value - sorted_values, sorted_values - value):
+        idx = np.clip(np.searchsorted(sorted_values, targets), 1, len(sorted_values) - 1)
+        gap = np.minimum(np.abs(sorted_values[idx] - targets), np.abs(sorted_values[idx - 1] - targets))
+        if (gap <= tol).any():
+            return True
+    return False
+
+def verify_numbers(text, facts):
+    """Check every amount and percentage in an AI answer against the facts it was given.
+
+    'exact' = quoted from the data; 'derived' = one step away (sum, difference, ratio, month range);
+    'unmatched' = could not be traced back, highlighted for the reader to double-check."""
+    ref = _reference_numbers(json.dumps(facts, ensure_ascii=False, sort_keys=True))
+    result = {"exact": 0, "derived": 0, "unmatched": [], "spans": []}
+    for start, end, kind, value, tol in _number_tokens(text):
+        if kind == "amount":
+            slack = tol + ref["amount_tol"]
+            if _near(ref["amounts"], value, slack):
+                result["exact"] += 1
+                continue
+            if _near(ref["derived"], value, slack) or _pair_hit(ref["pool"], value, slack):
+                result["derived"] += 1
+                continue
+        else:
+            if _near(ref["pcts"], value, tol + .05):
+                result["exact"] += 1
+                continue
+            if _near(ref["ratios"], value, tol + .05) or _near(ref["ratios"], -value, tol + .05):
+                result["derived"] += 1
+                continue
+        result["unmatched"].append(text[start:end].strip())
+        result["spans"].append((start, end))
+    return result
+
+def highlight_unmatched(text, check):
+    """Mark numbers the checker could not trace back, so the reader knows which ones to double-check."""
+    if not check or not check["spans"]:
+        return text
+    out, last = [], 0
+    for start, end in check["spans"]:
+        out += [text[last:start], f":orange-background[{text[start:end]}]"]
+        last = end
+    return "".join(out + [text[last:]])
+
+def number_check_badge(check):
+    if not check:
+        return
+    total = check["exact"] + check["derived"] + len(check["unmatched"])
+    if not total:
+        return
+    detail = tx(f"直接引用資料 {check['exact']} 個、由資料推算（加總、相減、比例）{check['derived']} 個",
+                f"{check['exact']} quoted from the data, {check['derived']} derived from it (sums, differences, ratios)")
+    if check["unmatched"]:
+        label = tx(f"數字查核：{total} 個數字中有 {len(check['unmatched'])} 個無法對應資料，已用橘色標示",
+                   f"Number check: {len(check['unmatched'])} of {total} figures could not be traced to the data (highlighted)")
+        color = STATUS_COLORS["需注意"]
+        detail += tx("；無法對應：", "; not traced: ") + "、".join(check["unmatched"][:6])
+    else:
+        label = tx(f"數字查核：{total} 個數字都能對應到資料", f"Number check: all {total} figures trace back to the data")
+        color = STATUS_COLORS["預算正常"]
+    st.markdown(f'<div class="chips">{ui_chip(label, color)}</div>', unsafe_allow_html=True,
+                help=detail + tx("。查核由系統比對，不經過 AI。", ". The check is done by the system, not the AI."))
 
 PDF_ACTIONS = {
     "高風險超支": ("檢視剩餘月份的採購、合約與支出計畫，必要時暫緩非必要支出。", "Review remaining-month purchases and contracts; defer discretionary spend if needed."),
@@ -2441,10 +2702,13 @@ def ai_brief_panel(key):
                     "## Executive summary\n≤3 sentences: company_total budget, forecast and gap (copy amounts exactly), naming the biggest overspend and headroom departments.\n"
                     "## Recommended actions\n3 concrete actions: controlling remaining-month spend of overspending departments, which headroom departments can fund reallocation, what to monitor.",
                 )
+                check = None
                 try:
+                    facts = build_ai_facts()
                     with st.spinner(tx(f"{ai_provider_label()} 撰寫中…", f"{ai_provider_label()} is writing…")):
-                        raw, source, notes = llm_answer([{"role": "user", "content": prompt}], AI_RULES + json.dumps(build_ai_facts(), ensure_ascii=False))
-                    text = merge_brief(raw)
+                        raw, source, notes = llm_answer([{"role": "user", "content": prompt}], AI_RULES + json.dumps(facts, ensure_ascii=False))
+                    text = merge_brief(raw).strip()
+                    check = verify_numbers(text, facts)
                     if notes and not ai_locked:  # 略過原因屬維運資訊，公開模式不顯示給訪客
                         source += tx("（已自動略過：", " (skipped: ") + "；".join(notes) + tx("）", ")")
                 except Exception as err:
@@ -2452,11 +2716,12 @@ def ai_brief_panel(key):
                     if not ai_locked:
                         st.caption(f":material/info: {err}")
             else:
-                text, source = rule_based_brief(), tx("內建規則", "Built-in rules")
-            cached = {"sig": signature, "text": text.strip(), "source": source}
+                text, source, check = rule_based_brief(), tx("內建規則", "Built-in rules"), None
+            cached = {"sig": signature, "text": text.strip(), "source": source, "check": check}
             st.session_state["ai_brief"] = cached
         if cached and cached["sig"] == signature:
-            st.markdown(md_safe(cached["text"]))
+            st.markdown(md_safe(highlight_unmatched(cached["text"], cached.get("check"))))
+            number_check_badge(cached.get("check"))
             foot, dl = st.columns([3, 1.3], vertical_alignment="center")
             foot.caption(tx(f"產生來源：{cached['source']}", f"Generated by: {cached['source']}"))
             with dl:
@@ -3087,7 +3352,8 @@ if active_nav_id == "budget_analysis":
 if active_nav_id == "forecast_risk":
     page_header(tx(f"{selected_year} 年底預測與預警", f"{selected_year} Forecast & risk"),
                 tx("55% 歷史季節性 + 45% Run-rate 加權推估；一次性支出不延伸到未來月份。", "55% historical seasonality + 45% run rate. One-off costs are not extrapolated."))
-    risk_views = st.tabs([tx("年底預測", "Forecast"), tx("預算預警", "Alerts"), tx("成本歸因", "Cost drivers")], key="tabs_risk", on_change="rerun")
+    risk_views = st.tabs([tx("年底預測", "Forecast"), tx("預算預警", "Alerts"), tx("成本歸因", "Cost drivers"), tx("提前預警回放", "Early-warning replay")],
+                         key="tabs_risk", on_change="rerun")
 
     if risk_views[0].open:
         with risk_views[0]:
@@ -3531,6 +3797,177 @@ if active_nav_id == "forecast_risk":
                 tx("憑證號碼", "Voucher"): st.column_config.TextColumn(pinned=True),
             })
 
+    if risk_views[3].open:
+        with risk_views[3]:
+            explain_card(tx("這頁在證明什麼？如果過去幾年就有這套系統，燈號會不會亮對", "What this proves: had this system run in past years, would its lights have been right"), [
+                tx("挑一個已經結束的年度，假裝回到當年每個月底，只用「當時已經知道」的支出資料。", "Pick a closed year and step through each month-end, using only the spending known at that time."),
+                tx("每個月都用本系統的方法重新預測年底並亮燈，同時用傳統月報（累計實際 ÷ 累計預算）當對照。", "Each month, re-run this system's year-end forecast and light, next to the traditional YTD variance report."),
+                tx("和那一年真正的年底結果比對：看誰比較早亮對燈、誰比較常亮錯燈。亮錯燈會讓主管白忙，甚至調走之後還要用的預算。",
+                   "Compare with the actual year-end result: who lights the right way earlier, and who lights the wrong way more often. Wrong lights waste attention and can move budget a department still needs."),
+            ])
+            replay_years = sorted(
+                (int(y) for y, g in df_db[df_db.Department.isin(selected_depts)].groupby("Year")
+                 if g.Actual.notna().all() and g.Month.nunique() == 12),
+                reverse=True)
+            if not replay_years:
+                st.info(tx("目前沒有已結算完整 12 個月的年度可以回放。", "No fully closed year is available to replay."))
+            else:
+                thresholds = tuple(st.session_state.get(k, d) for k, d in (("thr_watch_pct", 102), ("thr_high_pct", 105), ("thr_lag_pct", 90)))
+                def replay_summary(year):
+                    frame = early_warning_replay(df_db, year, tuple(selected_depts), thresholds)
+                    rows = []
+                    for dept, g in frame.groupby("Department", sort=False):
+                        final_status = g.Final_Status.iloc[0]
+                        target = alert_direction(final_status)
+                        rows.append({
+                            "Year": year, "Department": dept, "Final_Status": final_status, "Final_Use": g.Final_Use.iloc[0],
+                            "System_Month": first_steady_alert(zip(g.Month, g.Status), final_status),
+                            "Report_Month": first_steady_alert(zip(g.Month, g.Ytd_Status), final_status),
+                            # 亮錯燈：燈號亮了，但方向和年底結果不同（含年底其實正常的部門）
+                            "System_False": int(sum(alert_direction(s) not in (None, target) for s in g.Status)),
+                            "Report_False": int(sum(alert_direction(s) not in (None, target) for s in g.Ytd_Status)),
+                        })
+                    return frame, pd.DataFrame(rows, columns=["Year", "Department", "Final_Status", "Final_Use", "System_Month",
+                                                              "Report_Month", "System_False", "Report_False"])
+                all_summary = pd.concat([replay_summary(y)[1] for y in replay_years], ignore_index=True)
+                all_summary[["System_Month", "Report_Month"]] = all_summary[["System_Month", "Report_Month"]].astype(float)
+
+                # KPI 以「所有已結算年度」計算，避免只挑單一年度講故事
+                all_problems = all_summary[all_summary.Final_Status != "預算正常"]
+                sys_false, rep_false = int(all_summary.System_False.sum()), int(all_summary.Report_False.sum())
+                sys_caught, rep_caught = int(all_problems.System_Month.notna().sum()), int(all_problems.Report_Month.notna().sum())
+                lead = float((12 - all_problems.System_Month.dropna()).mean()) if sys_caught else 0.0
+                fewer = (1 - sys_false / rep_false) * 100 if rep_false else 0.0
+                good_c, warn_c = STATUS_COLORS["預算正常"], STATUS_COLORS["需注意"]
+                span = tx(f"FY{min(replay_years)}–FY{max(replay_years)} 共 {len(all_summary)} 個部門年度",
+                          f"FY{min(replay_years)}–FY{max(replay_years)}, {len(all_summary)} department-years")
+                stat_row([
+                    ui_kpi(tx("亮錯燈的月份", "Months with a wrong light"), tx(f"{sys_false} 次", f"{sys_false}"),
+                           tx(f"傳統月報 {rep_false} 次｜{span}", f"YTD report: {rep_false} · {span}"), "shield", good_c if sys_false <= rep_false else warn_c,
+                           delta=ui_delta(tx(f"少 {fewer:.0f}%", f"{fewer:.0f}% fewer"), good_c, "down") if sys_false < rep_false
+                           else ui_delta(tx("未優於月報", "not better"), warn_c),
+                           help=tx("燈號亮了，但方向和年底結果不同，例如月報整年說「執行落後」，年底其實正常花完。亮錯燈會讓主管白忙，甚至把之後還要用的預算調走。",
+                                   "The light was on but pointed the other way from the year-end result, e.g. 'behind plan' all year for a department that spent normally by December. Wrong lights waste attention and can move budget a department still needs.")),
+                    ui_kpi(tx("抓到的問題部門", "Problems caught"), f"{sys_caught} / {len(all_problems)}",
+                           tx(f"傳統月報 {rep_caught} / {len(all_problems)}｜11 月底前穩定亮燈", f"YTD report {rep_caught} / {len(all_problems)} · steady by November"), "target",
+                           good_c if sys_caught >= rep_caught else warn_c,
+                           delta=ui_delta(tx("年底超支或執行落後", "over or behind at year end"), MUTED)),
+                    ui_kpi(tx("平均提早發現", "Average early warning"), tx(f"{lead:.1f} 個月", f"{lead:.1f} months"),
+                           tx("比 12 月結算更早亮燈", "before the December close"), "clock", ACCENT,
+                           delta=ui_delta(tx("亮起後不再改變", "light stayed on"), ACCENT),
+                           help=tx("只計算燈號「亮對方向，而且之後每個月都維持」的第一個月份，避免把一閃而過的燈號算成提早發現。",
+                                   "Counts only the first month from which the light pointed the right way and stayed on every month after, so a one-off flicker is not counted.")),
+                ])
+
+                # 預設打開「兩種方法差最多」的年度；其他年度可自行切換
+                gap_by_year = all_summary.groupby("Year").apply(lambda g: g.Report_False.sum() - g.System_False.sum())
+                if st.session_state.get("replay_year") not in replay_years:
+                    st.session_state["replay_year"] = int(gap_by_year.idxmax()) if len(gap_by_year) else replay_years[0]
+                replay_year = st.segmented_control(tx("回放年度", "Replay year"), replay_years, required=True, key="replay_year",
+                                                   format_func=lambda y: f"FY{y}") or replay_years[0]
+                replay_method = st.segmented_control(tx("燈號依據", "Light from"), ["system", "report"], default="system", required=True,
+                                                     key="replay_method",
+                                                     format_func=lambda m: tx("本系統預測", "This system") if m == "system" else tx("傳統月報", "YTD report")) or "system"
+                replay, summary = replay_summary(replay_year)
+                summary[["System_Month", "Report_Month"]] = summary[["System_Month", "Report_Month"]].astype(float)
+                problems = summary[summary.Final_Status != "預算正常"]
+                use_system = replay_method == "system"
+
+                # 時間軸熱力圖：每一列是一個部門、每一格是「那個月底會亮的燈」，最右欄是年底真正結果
+                order = summary.assign(_s=summary.Final_Status.map(STATUS_SEVERITY)).sort_values(["_s", "Final_Use"], ascending=[True, False]).Department.tolist()
+                grid = replay.pivot(index="Department", columns="Month", values="Status" if use_system else "Ytd_Status").reindex(index=order[::-1])
+                uses = replay.pivot(index="Department", columns="Month", values="Forecast_Use" if use_system else "Ytd_Rate").reindex(index=grid.index)
+                finals = summary.set_index("Department").reindex(grid.index)
+                grid[12], uses[12] = finals.Final_Status, finals.Final_Use
+                code = {s: i for i, s in enumerate(STATUS_ORDER)}
+                n = len(STATUS_ORDER)
+                scale = []
+                for s, i in code.items():
+                    scale += [[i / n, STATUS_COLORS[s]], [(i + 1) / n, STATUS_COLORS[s]]]
+                month_labels = [tx(f"{m}月底", f"M{m}") for m in range(1, 12)] + [tx("年底實際", "Actual")]
+                replay_fig = go.Figure(go.Heatmap(
+                    z=grid.map(code.get).to_numpy(dtype=float) + .5, x=month_labels, y=[show_dept(d) for d in grid.index],
+                    zmin=0, zmax=n, colorscale=scale, showscale=False, xgap=3, ygap=3, opacity=.88,
+                    text=uses.map(lambda v: f"{v:.0f}%").to_numpy(), texttemplate="%{text}", textfont=dict(size=10.5, color="#ffffff"),
+                    customdata=grid.map(show_status).to_numpy(),
+                    hovertemplate="<b>%{y}</b> · %{x}<br>" + (tx("預測年底預算使用率", "Forecast year-end budget use") if use_system else tx("累計執行率", "YTD execution"))
+                                  + " %{text}<br>%{customdata}<extra></extra>",
+                ))
+                marks = summary.dropna(subset=["System_Month" if use_system else "Report_Month"])
+                if len(marks):
+                    replay_fig.add_scatter(
+                        x=[month_labels[int(m) - 1] for m in marks["System_Month" if use_system else "Report_Month"]], y=[show_dept(d) for d in marks.Department],
+                        mode="markers", marker=dict(symbol="square-open", size=30, color=TEXT, line=dict(width=2.5, color=TEXT)),
+                        name=tx("從這個月起穩定亮對燈", "Right light steadily from here"), hoverinfo="skip", hovertemplate="skip")
+                style_fig(replay_fig, height=46 * len(grid) + 110)
+                replay_fig.update_xaxes(showgrid=False, side="top", tickfont=dict(size=11))
+                replay_fig.update_yaxes(showgrid=False)
+                replay_fig.update_layout(margin=dict(l=8, r=8, t=8, b=8), legend=dict(orientation="h", y=-.04, yanchor="top", x=0))
+                year_false = int(summary.System_False.sum() if use_system else summary.Report_False.sum())
+                method_name = tx("本系統", "this system") if use_system else tx("傳統月報", "the YTD report")
+                show_chart(replay_fig, title=tx(f"FY{replay_year} 每個月底，{method_name}會亮什麼燈？", f"FY{replay_year}: what light would {method_name} show at each month-end?"),
+                           key="replay_heat",
+                           hint=tx(f"拿每一列和最右欄的年底實際比：顏色不同就是亮錯燈（這一年共 {year_false} 次）；框起來的格子是開始穩定亮對燈的月份。切換上方「燈號依據」比較兩種方法。",
+                                   f"Compare each row with the actual year end on the right: a different colour is a wrong light ({year_false} this year); the outlined cell is where the right light starts and stays. Switch 'Light from' to compare methods."),
+                           help_text=tx("本系統＝依每個月底的年底預測（季節性＋Run-rate、一次性支出不外推）亮燈；傳統月報＝依累計實際 ÷ 累計預算亮燈。格內數字是各自的百分比，門檻與「系統設定」相同。",
+                                        "This system = lights from each month-end's year-end forecast (seasonality + run rate, one-offs not extrapolated); YTD report = lights from actual ÷ budget to date. Cell numbers are each method's percentage; thresholds match Settings."))
+
+                # 單一部門：本系統預測 vs 傳統月報，逐月對照（年底出問題、或任一方法亮錯燈的部門）
+                focus = summary[(summary.Final_Status != "預算正常") | (summary.System_False > 0) | (summary.Report_False > 0)]
+                if not focus.empty:
+                    focus = focus.assign(_gap=focus.Report_False - focus.System_False).sort_values("_gap", ascending=False)
+                    options = focus.Department.tolist()
+                    if st.session_state.get("replay_dept") not in options:
+                        st.session_state["replay_dept"] = options[0]
+                    replay_dept = st.pills(tx("查看部門", "Department"), options, format_func=show_dept,
+                                           key="replay_dept", label_visibility="collapsed") or options[0]
+                    g = replay[replay.Department == replay_dept]
+                    row = summary.set_index("Department").loc[replay_dept]
+                    line_c = STATUS_COLORS[row.Final_Status]
+                    dept_fig = go.Figure()
+                    watch, high, lag = thresholds
+                    band_hi = max(float(g.Forecast_Use.max()), float(g.Ytd_Rate.max()), row.Final_Use, high) + 3
+                    band_lo = min(float(g.Forecast_Use.min()), float(g.Ytd_Rate.min()), row.Final_Use, lag) - 3
+                    dept_fig.add_hrect(y0=lag, y1=watch, fillcolor=rgba(STATUS_COLORS["預算正常"], .07), line_width=0)
+                    dept_fig.add_hline(y=100, line=dict(color=MUTED, width=1, dash="dot"))
+                    dept_fig.add_scatter(x=g.Month, y=g.Ytd_Rate, name=tx("傳統月報：累計實際 ÷ 累計預算", "YTD report: actual ÷ budget to date"),
+                                         mode="lines+markers", line=dict(color=MUTED, width=2, dash="dash"), marker=dict(size=6))
+                    dept_fig.add_scatter(x=g.Month, y=g.Forecast_Use, name=tx("本系統：預測年底使用率", "This system: forecast year-end use"),
+                                         mode="lines+markers", line=dict(color=ACCENT, width=3), marker=dict(size=8, color=[STATUS_COLORS[s] for s in g.Status],
+                                                                                                          line=dict(color=PANEL, width=1.5)))
+                    dept_fig.add_scatter(x=[12], y=[row.Final_Use], name=tx("年底實際", "Actual year end"), mode="markers",
+                                         marker=dict(symbol="star", size=16, color=line_c, line=dict(color=PANEL, width=1.5)))
+                    flag_lines = [(row.System_Month, tx("本系統亮燈", "System flags"), ACCENT), (row.Report_Month, tx("月報亮燈", "Report flags"), MUTED)]
+                    if pd.notna(row.System_Month) and row.System_Month == row.Report_Month:
+                        flag_lines = [(row.System_Month, tx("兩者同時亮燈", "Both flag"), ACCENT)]
+                    for month, label, color in flag_lines:
+                        if pd.notna(month):
+                            dept_fig.add_vline(x=float(month), line=dict(color=color, width=1.5, dash="dot"))
+                            dept_fig.add_annotation(x=float(month), y=1, yref="paper", text=tx(f"{label}｜{int(month)} 月", f"{label} · M{int(month)}"),
+                                                    showarrow=False, yanchor="bottom", font=dict(size=11, color=color), bgcolor=PANEL)
+                    style_fig(dept_fig, height=360)
+                    dept_fig.update_xaxes(tickmode="array", tickvals=MONTHS, ticktext=[tx(f"{m}月", f"M{m}") for m in MONTHS], showgrid=False, range=[.5, 12.5])
+                    dept_fig.update_yaxes(ticksuffix="%", range=[band_lo, band_hi])
+                    dept_fig.update_layout(margin=dict(l=8, r=8, t=34, b=8))
+                    dept_name = show_dept(replay_dept)
+                    if row.Final_Status == "預算正常":
+                        verdict = tx(f"{dept_name}年底其實正常（{fpct(row.Final_Use)}）。傳統月報亮錯燈 {int(row.Report_False)} 個月，本系統 {int(row.System_False)} 個月；"
+                                     + ("月報看不到年底集中支出，才會一直以為執行落後。" if row.Report_False > row.System_False else "兩者差不多。"),
+                                     f"{dept_name} actually ended on track ({fpct(row.Final_Use)}). The YTD report showed a wrong light for {int(row.Report_False)} months, this system {int(row.System_False)}"
+                                     + ("; the report cannot see year-end spending, so it kept calling the department behind plan." if row.Report_False > row.System_False else "; about the same."))
+                    elif pd.notna(row.System_Month):
+                        report_text = tx(f"傳統月報 {int(row.Report_Month)} 月", f"the YTD report from M{int(row.Report_Month)}") if pd.notna(row.Report_Month) \
+                            else tx("傳統月報到 11 月都沒有穩定亮燈", "the YTD report never flagged it steadily")
+                        verdict = tx(f"{dept_name}年底{show_status(row.Final_Status)}（{fpct(row.Final_Use)}）：本系統 {int(row.System_Month)} 月底起穩定亮燈（比 12 月結算早 {12 - int(row.System_Month)} 個月），{report_text}。",
+                                     f"{dept_name} ended {show_status(row.Final_Status).lower()} ({fpct(row.Final_Use)}): this system flagged it steadily from M{int(row.System_Month)} ({12 - int(row.System_Month)} months before the December close); {report_text}.")
+                    else:
+                        verdict = tx(f"{dept_name}年底{show_status(row.Final_Status)}（{fpct(row.Final_Use)}），只略過門檻；本系統在 11 月底前沒有穩定亮燈，這是模型仍需改進的案例。",
+                                     f"{dept_name} ended {show_status(row.Final_Status).lower()} ({fpct(row.Final_Use)}), just past the threshold; this system did not flag it steadily before November, a case the model should still improve on.")
+                    show_chart(dept_fig, title=tx(f"{dept_name}：本系統 vs 傳統月報，逐月對照", f"{dept_name}: this system vs the YTD report, month by month"),
+                               key="replay_dept_chart", hint=verdict,
+                               help_text=tx("藍線＝每個月底本系統預測的年底預算使用率（點的顏色＝當時的燈號）；灰虛線＝傳統月報的累計執行率；星號＝那一年真正的年底結果；淡綠色帶＝預算正常範圍。",
+                                            "Blue = this system's forecast year-end budget use at each month-end (dot colour = the light then); grey dashed = the YTD report; star = the actual year end; green band = on-track range."))
+
 # ------------------------------------------
 # 情境與資料品質
 # ------------------------------------------
@@ -3865,12 +4302,14 @@ if active_nav_id == "ai_assistant":
 
     for i, message in enumerate(st.session_state.chat_messages):
         with st.chat_message(message["role"], avatar=":material/person:" if message["role"] == "user" else ":material/auto_awesome:"):
-            st.markdown(md_safe(message["content"]))
+            st.markdown(md_safe(highlight_unmatched(message["content"], message.get("check"))))
+            number_check_badge(message.get("check"))
             if message.get("source"):
                 st.caption(message["source"])
             if message.get("chart_spec"):
                 chat_fig, chat_title = build_chat_chart(message["chart_spec"])
-                show_chart(chat_fig, title=chat_title, key=f"chat_{i}")
+                show_chart(chat_fig, title=chat_title, key=f"chat_{i}",
+                           caption=tx("圖表由 AI 依問題挑選", "Chart chosen by the AI for this question") if message.get("chart_by_ai") else None)
 
     user_input = st.chat_input(tx("輸入預算或部門相關問題…", "Ask a budget or department question…"))
     if st.session_state.get("pending_prompt"):
@@ -3882,14 +4321,18 @@ if active_nav_id == "ai_assistant":
             st.markdown(md_safe(user_input))
         with st.chat_message("assistant", avatar=":material/auto_awesome:"):
             source = tx("內建規則", "Built-in rules")
+            check, chart_spec, ai_picked_chart = None, None, False
             if ai_available():
-                conversation = st.session_state.chat_messages[-12:]
+                conversation = [{"role": m["role"], "content": m["content"]} for m in st.session_state.chat_messages[-12:]]
                 while conversation and conversation[0]["role"] == "assistant":
                     conversation = conversation[1:]
-                system_context = AI_RULES + json.dumps(build_ai_facts(user_input), ensure_ascii=False)
+                facts = build_ai_facts(user_input)
+                system_context = AI_RULES + chat_chart_rules() + json.dumps(facts, ensure_ascii=False)
                 try:
                     with st.spinner(tx(f"{ai_provider_label()} 思考中…", f"{ai_provider_label()} is thinking…")):
                         reply, source, notes = llm_answer(conversation, system_context)
+                    reply, chart_spec, ai_picked_chart = parse_chart_tag(reply)
+                    check = verify_numbers(reply, facts)
                     if notes and not ai_locked:  # 略過原因屬維運資訊，公開模式不顯示給訪客
                         source += tx("（已自動略過：", " (skipped: ") + "；".join(notes) + tx("）", ")")
                 except Exception as err:
@@ -3897,37 +4340,11 @@ if active_nav_id == "ai_assistant":
                     source = tx("內建規則（模型額度已用完或無法連線）", "Built-in rules (model quota used up or unreachable)")
                     if not ai_locked:
                         st.caption(f":material/info: {err}")
-                st.markdown(md_safe(reply))
             else:
                 reply = local_budget_reply(user_input, analysis_res, selected_year)
-                st.markdown(md_safe(reply))
-            q = user_input.casefold()
-            chart_terms = ["圖", "趨勢", "走勢", "圖表", "chart", "plot", "trend", "graph", "哪個部門", "哪些部門", "which department", "which departments", "overspend", "risk", "專案", "供應商", "成本中心", "project", "vendor", "cost center"]
-            chart_terms += [term.casefold() for dept in selected_depts for term in (dept.split(" (")[0], DEPT_EN.get(dept.split(" (")[0], "")) if term]
-            chart_terms += [term.casefold() for account in ACCOUNT_EN for term in (account, ACCOUNT_EN[account])]
-            chart_spec = None
-            if any(term in q for term in chart_terms):
-                matched_department = next((d for d in selected_depts if d.split(" (")[0].casefold() in q or DEPT_EN.get(d.split(" (")[0], "").casefold() in q), None)
-                matched_account = next((account for account in ACCOUNT_EN if account.casefold() in q or ACCOUNT_EN[account].casefold() in q), None)
-                dimension_aliases = {
-                    "Project": ("專案", "project"), "Vendor": ("供應商", "廠商", "vendor", "supplier"),
-                    "Cost_Center": ("成本中心", "cost center"),
-                }
-                matched_dimension = next((dim for dim, terms in dimension_aliases.items() if any(term in q for term in terms)), None)
-                quarter = next((n for n, terms in {1: ("第一季", "q1", "first quarter"), 2: ("第二季", "q2", "second quarter"), 3: ("第三季", "q3", "third quarter"), 4: ("第四季", "q4", "fourth quarter")}.items() if any(term in q for term in terms)), None)
-                if matched_dimension:
-                    chart_spec = {"type": "dimension", "dimension": matched_dimension,
-                                  "account": matched_account,
-                                  "departments": [matched_department] if matched_department else selected_depts,
-                                  "quarter": quarter}
-                elif matched_account:
-                    chart_spec = {"type": "account", "account": matched_account,
-                                  "departments": [matched_department] if matched_department else selected_depts,
-                                  "quarter": quarter}
-                elif matched_department:
-                    chart_spec = {"type": "monthly", "department": matched_department}
-                else:
-                    chart_spec = {"type": "forecast"}
-        st.session_state.chat_messages.append({"role": "assistant", "content": reply, "chart_spec": chart_spec,
+            if not ai_picked_chart:
+                chart_spec = keyword_chart_spec(user_input)
+        st.session_state.chat_messages.append({"role": "assistant", "content": reply, "chart_spec": chart_spec, "check": check,
+                                               "chart_by_ai": ai_picked_chart and chart_spec is not None,
                                                "source": tx(f"回答來源：{source}", f"Answered by: {source}")})
         st.rerun()
