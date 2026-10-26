@@ -553,6 +553,13 @@ GL_CODES = {
     "理賠查勘費": "6181", "理賠外包服務費": "6182", "精算資料服務費": "6191", "風險資料服務費": "6192",
     "一次性資本支出": "1561",
 }
+# 會計科目大類（依科目代碼前三碼），給占比圖使用
+GL_FAMILY = {
+    "612": ("人員與差旅", "People & travel"), "613": ("人員與差旅", "People & travel"),
+    "614": ("資訊系統", "IT systems"), "615": ("行銷推廣", "Marketing"), "616": ("行政總務", "Administration"),
+    "617": ("專業顧問與外包", "Professional services"), "618": ("理賠作業", "Claims operations"),
+    "619": ("資料服務", "Data services"), "156": ("資本支出", "Capital expenditure"),
+}
 # 供應商（虛構）：(中文名稱, 英文名稱)
 _V = {
     "cloud1": ("雲翔數位科技股份有限公司", "Cloudsoar Digital Technology"), "cloud2": ("澄峰雲端服務股份有限公司", "Clearpeak Cloud Services"),
@@ -1883,6 +1890,14 @@ def local_budget_reply(question, budget_data, year):
             f"**{show_dept(dept)}｜{year} 年預算**\n\n年度預算 {fmc(row.Budget_Full)}；目前已執行 {fmc(row.Actual_YTD)}（使用率 {fpct(row.Usage_Rate)}）；年底預測 {fmc(row.Forecast_EOY)}，預測差異 {fmc(row.Forecast_Var, signed=True)}（{fpct(row.Forecast_Pct, signed=True)}）。狀態：{status_label(row.Status)}。",
             f"**{show_dept(dept)} | {year} budget**\n\nAnnual budget: {fmc(row.Budget_Full)}; actual to date: {fmc(row.Actual_YTD)} ({fpct(row.Usage_Rate)} utilized); year-end forecast: {fmc(row.Forecast_EOY)}; forecast variance: {fmc(row.Forecast_Var, signed=True)} ({fpct(row.Forecast_Pct, signed=True)}). Status: {status_label(row.Status)}.",
         )
+    share = share_chart_request(q)
+    if share and (share["by"], share["measure"]) != ("department", "budget"):
+        return tx("下方環狀圖依您的問題繪製，滑鼠移到各區塊可看金額與占比。", "The donut below follows your question; hover a slice for its amount and share.")
+    if share:
+        top = budget_data.sort_values("Budget_Full", ascending=False).head(3)
+        parts = [f"{show_dept(r.Department)} {fpct(r.Budget_Full / budget_total * 100 if budget_total else 0)}" for r in top.itertuples()]
+        return tx(f"下方環狀圖是各部門的年度預算占比（合計 {fmc(budget_total)}）。占比最高的是 " + "、".join(parts) + "。",
+                  f"The donut below shows each department's share of the annual budget (total {fmc(budget_total)}). Largest: " + ", ".join(parts) + ".")
     if any(word in q for word in ["超支", "風險", "overspend", "risk"]):
         rows = budget_data[budget_data.Forecast_Var > 0].sort_values("Forecast_Var", ascending=False)
         if rows.empty:
@@ -2322,8 +2337,13 @@ def chat_chart_rules():
         "{\"type\":\"monthly\",\"department\":D} = one department's monthly budget vs actual; "
         "{\"type\":\"account\",\"account\":C,\"department\":D or null,\"quarter\":1-4 or null} = one expense category by month; "
         "{\"type\":\"dimension\",\"dimension\":\"Project\"|\"Vendor\"|\"Cost_Center\",\"account\":C or null,\"department\":D or null,\"quarter\":1-4 or null} = spending by project, vendor or cost centre; "
+        "{\"type\":\"share\",\"by\":\"department\"|\"account\"|\"status\",\"measure\":\"budget\"|\"actual\"|\"forecast\"} = donut (ring/pie) chart of shares; "
+        "use it whenever the user asks for a donut, ring, pie or 環狀圖/圓餅圖, or for a composition or share (占比、比重、組成); "
         "{\"type\":\"none\"} when no chart helps (greetings, definitions, general concepts). "
-        f"D must be one of: {depts}. C must be one of: {accounts}. Never mention the tag in your text.\n"
+        f"D must be one of: {depts}. C must be one of: {accounts}. Never mention the tag in your text. "
+        "If the user asks for a chart type not listed, pick the closest one and say in one sentence which chart is shown.\n"
+        "ALWAYS answer the user's LATEST message only. Never repeat an earlier answer; if the latest message only asks for a chart, "
+        "write two or three sentences about what that chart shows (with its key figures), then the tag.\n"
     )
 
 _CHART_TAG_RE = re.compile(r"<chart>\s*(\{.*?\})\s*</chart>", re.S)
@@ -2358,14 +2378,31 @@ def parse_chart_tag(reply):
         return clean, {"type": "monthly", "department": dept}, True
     if kind == "account" and account:
         return clean, {"type": "account", "account": account, "departments": [dept] if dept else selected_depts, "quarter": quarter}, True
+    if kind == "share":
+        by = spec.get("by") if spec.get("by") in ("department", "account", "status") else "department"
+        measure = spec.get("measure") if spec.get("measure") in ("budget", "actual", "forecast") else "budget"
+        return clean, {"type": "share", "by": by, "measure": measure, "departments": selected_depts}, True
     if kind == "dimension" and spec.get("dimension") in ("Project", "Vendor", "Cost_Center"):
         return clean, {"type": "dimension", "dimension": spec["dimension"], "account": account,
                        "departments": [dept] if dept else selected_depts, "quarter": quarter}, True
     return clean, None, False
 
+def share_chart_request(q):
+    """Donut / share requests by keyword: what to split by and which amount to measure."""
+    if not any(t in q for t in ("環狀", "圓餅", "甜甜圈", "圓環", "占比", "佔比", "比重", "組成", "donut", "pie", "ring", "share", "composition")):
+        return None
+    by = "account" if any(t in q for t in ("科目", "類別", "費用別", "category", "account")) else \
+        "status" if any(t in q for t in ("燈號", "狀態", "status")) else "department"
+    measure = "actual" if any(t in q for t in ("實際", "已花", "已執行", "actual", "spent")) else \
+        "forecast" if any(t in q for t in ("預測", "年底", "forecast")) else "budget"
+    return {"type": "share", "by": by, "measure": measure, "departments": selected_depts}
+
 def keyword_chart_spec(user_input):
     """Fallback chart choice by keywords, used when the model did not pick one (built-in rules, or a missing/malformed tag)."""
     q = user_input.casefold()
+    share_spec = share_chart_request(q)
+    if share_spec:
+        return share_spec
     chart_terms = ["圖", "趨勢", "走勢", "圖表", "chart", "plot", "trend", "graph", "哪個部門", "哪些部門", "which department", "which departments", "overspend", "risk", "專案", "供應商", "成本中心", "project", "vendor", "cost center"]
     chart_terms += [term.casefold() for dept in selected_depts for term in (dept.split(" (")[0], DEPT_EN.get(dept.split(" (")[0], "")) if term]
     chart_terms += [term.casefold() for account in ACCOUNT_EN for term in (account, ACCOUNT_EN[account])]
@@ -2783,6 +2820,41 @@ def build_chat_chart(chart_spec):
                            line=dict(color=dept_color(dept), width=3))
         figure.update_xaxes(dtick=1, title_text=tx("月份", "Month"))
         title = tx(f"{show_dept(dept)}每月預算與實際支出", f"Monthly budget and actual spending: {show_dept(dept)}")
+    elif chart_spec["type"] == "share":
+        # 環狀圖：組成占比（部門、費用科目或燈號）
+        by, measure = chart_spec.get("by", "department"), chart_spec.get("measure", "budget")
+        measure_col = {"budget": "Budget_Full", "actual": "Actual_YTD", "forecast": "Forecast_EOY"}.get(measure, "Budget_Full")
+        measure_label = {"budget": tx("年度預算", "annual budget"), "actual": tx("已執行支出", "spending to date"),
+                         "forecast": tx("年底預測", "year-end forecast")}.get(measure, tx("年度預算", "annual budget"))
+        scope = analysis_res[analysis_res.Department.isin(chart_spec.get("departments", selected_depts))]
+        if by == "status":
+            values = scope.groupby("Status")[measure_col].sum().reindex(STATUS_ORDER).dropna()
+            values = values[values > 0]
+            labels, colors = [show_status(s) for s in values.index], [STATUS_COLORS[s] for s in values.index]
+            title = tx(f"{measure_label}依部門燈號的占比", f"Share of {measure_label} by department status")
+        elif by == "account":
+            measure_label = tx("已執行支出", "spending to date")
+            detail = expense_detail[(expense_detail.Year == selected_year) & expense_detail.Department.isin(scope.Department)]
+            # 27 個明細科目切成環圖會太碎，改依會計科目代碼前三碼歸成大類
+            family = detail.Account.map(lambda a: GL_FAMILY.get(GL_CODES.get(a, "")[:3], ("其他", "Other")))
+            values = detail.Amount.groupby(family).sum().sort_values(ascending=False)
+            labels = [tx(*f) for f in values.index]
+            cycle = list(DEPT_COLORS.values())
+            colors = [cycle[i % len(cycle)] for i in range(len(values))]
+            title = tx("已執行支出依費用大類的占比", "Share of spending to date by expense family")
+        else:
+            values = scope.set_index("Department")[measure_col].sort_values(ascending=False)
+            labels, colors = [show_dept(d) for d in values.index], [dept_color(d) for d in values.index]
+            title = tx(f"各部門{measure_label}占比", f"Share of {measure_label} by department")
+        figure = go.Figure(go.Pie(
+            labels=labels, values=values.to_numpy(), hole=.6, sort=False, direction="clockwise",
+            marker=dict(colors=colors, line=dict(color=PANEL, width=2)), textinfo="percent", textfont=dict(size=12, color="#ffffff"),
+            customdata=[fmc(v) for v in values], hovertemplate="<b>%{label}</b><br>%{customdata}（%{percent}）<extra></extra>",
+        ))
+        figure.add_annotation(text=f"<b>{fmc(values.sum())}</b><br><span style='font-size:11px;color:{MUTED}'>{measure_label}</span>",
+                              x=.5, y=.5, xref="paper", yref="paper", showarrow=False, font=dict(size=17, color=TEXT))
+        style_fig(figure, height=380)
+        return figure, title
     else:
         figure = variance_bar_fig(analysis_res.Department.map(show_dept), analysis_res.Forecast_Var, analysis_res.Forecast_Pct,
                                   [STATUS_COLORS[s] for s in analysis_res.Status])
@@ -2943,10 +3015,10 @@ if active_nav_id == "overview":
             frac = np.linspace(0, 1, len(fan_x)) if len(fan_x) > 1 else np.array([1.0])
             fan_mid = cum_path.iloc[start - 1:].to_numpy()
             path_fig.add_scatter(x=fan_x, y=fan_mid + frac * (high_total - tf_sum), mode="lines", line=dict(width=0),
-                                 showlegend=False, hoverinfo="skip", hovertemplate="skip")
+                                 showlegend=False, hoverinfo="skip")
             path_fig.add_scatter(x=fan_x, y=fan_mid - frac * (tf_sum - low_total), mode="lines", line=dict(width=0),
                                  fill="tonexty", fillcolor=rgba(forecast_color, .16), name=tx("P80 預測區間", "P80 range"),
-                                 hoverinfo="skip", hovertemplate="skip")
+                                 hoverinfo="skip")
         path_fig.add_scatter(x=MONTHS, y=cum_budget, name=tx("累計預算", "Cumulative budget"), mode="lines",
                              line=dict(color=MUTED, width=2, dash="dot"))
         if data_cutoff_month:
@@ -2956,7 +3028,7 @@ if active_nav_id == "overview":
                                  fill="tozeroy", fillgradient=dict(type="vertical", start=0, stop=float(cum_actual.max()),
                                                                    colorscale=[[0, rgba(ACCENT, 0)], [1, rgba(ACCENT, .42)]]))
             path_fig.add_scatter(x=[data_cutoff_month], y=[float(cum_actual.iloc[data_cutoff_month - 1])], mode="markers",
-                                 showlegend=False, hoverinfo="skip", hovertemplate="skip",
+                                 showlegend=False, hoverinfo="skip",
                                  marker=dict(size=11, color=ACCENT, line=dict(color=rgba(ACCENT, .35), width=7)))
         if data_cutoff_month < 12:
             path_fig.add_scatter(x=fan_x, y=fan_mid, name=tx("預測路徑", "Forecast path"), mode="lines",
@@ -3684,7 +3756,7 @@ if active_nav_id == "forecast_risk":
                     acct_fig.add_bar(y=part.Label, x=part.Amount, orientation="h", name=show_dept(dept), marker_color=dept_color(dept))
                 acct_fig.add_scatter(y=order, x=label_tot.to_numpy(), mode="text", textposition="middle right", showlegend=False,
                                      text=[f"  {fmc(v)} · {v / total_spend * 100:.1f}%" for v in label_tot], textfont=dict(color=TEXT, size=11.5),
-                                     cliponaxis=False, hoverinfo="skip", hovertemplate="skip")
+                                     cliponaxis=False, hoverinfo="skip")
                 acct_fig.update_layout(barmode="stack")
                 acct_fig.update_yaxes(categoryorder="array", categoryarray=order[::-1], showgrid=False)
                 style_fig(acct_fig, height=max(320, 34 * len(order) + 120))
@@ -3865,52 +3937,70 @@ if active_nav_id == "forecast_risk":
                     st.session_state["replay_year"] = int(gap_by_year.idxmax()) if len(gap_by_year) else replay_years[0]
                 replay_year = st.segmented_control(tx("回放年度", "Replay year"), replay_years, required=True, key="replay_year",
                                                    format_func=lambda y: f"FY{y}") or replay_years[0]
-                replay_method = st.segmented_control(tx("燈號依據", "Light from"), ["system", "report"], default="system", required=True,
-                                                     key="replay_method",
-                                                     format_func=lambda m: tx("本系統預測", "This system") if m == "system" else tx("傳統月報", "YTD report")) or "system"
                 replay, summary = replay_summary(replay_year)
                 summary[["System_Month", "Report_Month"]] = summary[["System_Month", "Report_Month"]].astype(float)
                 problems = summary[summary.Final_Status != "預算正常"]
-                use_system = replay_method == "system"
 
-                # 時間軸熱力圖：每一列是一個部門、每一格是「那個月底會亮的燈」，最右欄是年底真正結果
+                # 成對時間軸：每個部門兩列（本系統／傳統月報），灰格＝沒亮燈，彩色＝亮燈，✕＝亮錯燈，最右欄＝年底實際結果
                 order = summary.assign(_s=summary.Final_Status.map(STATUS_SEVERITY)).sort_values(["_s", "Final_Use"], ascending=[True, False]).Department.tolist()
-                grid = replay.pivot(index="Department", columns="Month", values="Status" if use_system else "Ytd_Status").reindex(index=order[::-1])
-                uses = replay.pivot(index="Department", columns="Month", values="Forecast_Use" if use_system else "Ytd_Rate").reindex(index=grid.index)
-                finals = summary.set_index("Department").reindex(grid.index)
-                grid[12], uses[12] = finals.Final_Status, finals.Final_Use
-                code = {s: i for i, s in enumerate(STATUS_ORDER)}
-                n = len(STATUS_ORDER)
+                light_code = {"執行落後": 1, "需注意": 2, "高風險超支": 3}
+                palette = [TRACK, STATUS_COLORS["執行落後"], STATUS_COLORS["需注意"], STATUS_COLORS["高風險超支"], STATUS_COLORS["預算正常"]]
                 scale = []
-                for s, i in code.items():
-                    scale += [[i / n, STATUS_COLORS[s]], [(i + 1) / n, STATUS_COLORS[s]]]
-                month_labels = [tx(f"{m}月底", f"M{m}") for m in range(1, 12)] + [tx("年底實際", "Actual")]
+                for i, c in enumerate(palette):
+                    scale += [[i / len(palette), c], [(i + 1) / len(palette), c]]
+                month_labels = [tx(f"{m}月", f"M{m}") for m in range(1, 12)] + [tx("年底實際", "Actual")]
+                methods = [("Status", "Forecast_Use", "System_Month", tx("本系統", "This system"), tx("預測年底使用率", "Forecast year-end use")),
+                           ("Ytd_Status", "Ytd_Rate", "Report_Month", tx("傳統月報", "YTD report"), tx("累計執行率", "YTD execution"))]
+                row_keys, tick_text, z_rows, text_rows, hover_rows = [], [], [], [], []
+                wrong_x, wrong_y, steady_x, steady_y = [], [], [], []
+                for dept in order[::-1]:  # Plotly 由下往上排，反轉後最嚴重的部門在最上面
+                    g = replay[replay.Department == dept].sort_values("Month")
+                    fin = summary.set_index("Department").loc[dept]
+                    target = alert_direction(fin.Final_Status)
+                    for status_col, value_col, month_col, label, value_label in methods[::-1]:
+                        key = f"{dept}|{status_col}"
+                        row_keys.append(key)
+                        tick_text.append(f"<b>{show_dept(dept)}</b>  {label}" if status_col == "Status" else f"<span style='color:{MUTED}'>{label}</span>")
+                        z_rows.append([light_code.get(s, 0) + .5 for s in g[status_col]] + [(light_code.get(fin.Final_Status, 4)) + .5])
+                        text_rows.append([""] * 11 + [f"{fin.Final_Use:.0f}%"])
+                        hover = []
+                        for m, s, v in zip(g.Month, g[status_col], g[value_col]):
+                            wrong = alert_direction(s) not in (None, target)
+                            if wrong:
+                                wrong_x.append(month_labels[m - 1])
+                                wrong_y.append(key)
+                            hover.append(f"<b>{show_dept(dept)}｜{label}</b><br>{tx(f'{m} 月底', f'Month {m}')}：{value_label} {v:.0f}%<br>"
+                                         + (show_status(s) if alert_direction(s) else tx("沒有亮燈", "No light"))
+                                         + (tx("（亮錯燈）", " (wrong light)") if wrong else ""))
+                        hover.append(f"<b>{show_dept(dept)}</b><br>{tx('年底實際', 'Actual year end')} {fin.Final_Use:.1f}%<br>{show_status(fin.Final_Status)}")
+                        hover_rows.append(hover)
+                        if pd.notna(fin[month_col]):
+                            steady_x.append(month_labels[int(fin[month_col]) - 1])
+                            steady_y.append(key)
                 replay_fig = go.Figure(go.Heatmap(
-                    z=grid.map(code.get).to_numpy(dtype=float) + .5, x=month_labels, y=[show_dept(d) for d in grid.index],
-                    zmin=0, zmax=n, colorscale=scale, showscale=False, xgap=3, ygap=3, opacity=.88,
-                    text=uses.map(lambda v: f"{v:.0f}%").to_numpy(), texttemplate="%{text}", textfont=dict(size=10.5, color="#ffffff"),
-                    customdata=grid.map(show_status).to_numpy(),
-                    hovertemplate="<b>%{y}</b> · %{x}<br>" + (tx("預測年底預算使用率", "Forecast year-end budget use") if use_system else tx("累計執行率", "YTD execution"))
-                                  + " %{text}<br>%{customdata}<extra></extra>",
+                    z=z_rows, x=month_labels, y=row_keys, zmin=0, zmax=len(palette), colorscale=scale, showscale=False,
+                    xgap=2, ygap=2, text=text_rows, texttemplate="%{text}", textfont=dict(size=11, color="#ffffff"),
+                    customdata=hover_rows, hovertemplate="%{customdata}<extra></extra>",
                 ))
-                marks = summary.dropna(subset=["System_Month" if use_system else "Report_Month"])
-                if len(marks):
-                    replay_fig.add_scatter(
-                        x=[month_labels[int(m) - 1] for m in marks["System_Month" if use_system else "Report_Month"]], y=[show_dept(d) for d in marks.Department],
-                        mode="markers", marker=dict(symbol="square-open", size=30, color=TEXT, line=dict(width=2.5, color=TEXT)),
-                        name=tx("從這個月起穩定亮對燈", "Right light steadily from here"), hoverinfo="skip", hovertemplate="skip")
-                style_fig(replay_fig, height=46 * len(grid) + 110)
-                replay_fig.update_xaxes(showgrid=False, side="top", tickfont=dict(size=11))
-                replay_fig.update_yaxes(showgrid=False)
-                replay_fig.update_layout(margin=dict(l=8, r=8, t=8, b=8), legend=dict(orientation="h", y=-.04, yanchor="top", x=0))
-                year_false = int(summary.System_False.sum() if use_system else summary.Report_False.sum())
-                method_name = tx("本系統", "this system") if use_system else tx("傳統月報", "the YTD report")
-                show_chart(replay_fig, title=tx(f"FY{replay_year} 每個月底，{method_name}會亮什麼燈？", f"FY{replay_year}: what light would {method_name} show at each month-end?"),
+                if wrong_x:
+                    replay_fig.add_scatter(x=wrong_x, y=wrong_y, mode="markers", name=tx("亮錯燈", "Wrong light"), hoverinfo="skip",
+                                           marker=dict(symbol="x-thin", size=9, line=dict(width=2.2, color="#ffffff"), color="#ffffff"))
+                if steady_x:
+                    replay_fig.add_scatter(x=steady_x, y=steady_y, mode="markers", name=tx("從這個月起穩定亮對燈", "Right light steadily from here"),
+                                           hoverinfo="skip", marker=dict(symbol="square-open", size=19, line=dict(width=2.2, color=TEXT), color=TEXT))
+                for i in range(2, len(row_keys), 2):  # 部門之間的分隔線
+                    replay_fig.add_shape(type="line", xref="paper", x0=0, x1=1, yref="y", y0=i - .5, y1=i - .5, line=dict(color=BORDER, width=2))
+                style_fig(replay_fig, height=24 * len(row_keys) + 110)
+                replay_fig.update_xaxes(showgrid=False, side="top", tickfont=dict(size=11), fixedrange=True)
+                replay_fig.update_yaxes(showgrid=False, tickmode="array", tickvals=row_keys, ticktext=tick_text, tickfont=dict(size=11.5), fixedrange=True)
+                replay_fig.update_layout(margin=dict(l=8, r=8, t=8, b=8), legend=dict(orientation="h", y=-.02, yanchor="top", x=0))
+                sys_year, rep_year = int(summary.System_False.sum()), int(summary.Report_False.sum())
+                show_chart(replay_fig, title=tx(f"FY{replay_year}：本系統 vs 傳統月報，每個月底亮的燈", f"FY{replay_year}: this system vs the YTD report, light at each month-end"),
                            key="replay_heat",
-                           hint=tx(f"拿每一列和最右欄的年底實際比：顏色不同就是亮錯燈（這一年共 {year_false} 次）；框起來的格子是開始穩定亮對燈的月份。切換上方「燈號依據」比較兩種方法。",
-                                   f"Compare each row with the actual year end on the right: a different colour is a wrong light ({year_false} this year); the outlined cell is where the right light starts and stays. Switch 'Light from' to compare methods."),
-                           help_text=tx("本系統＝依每個月底的年底預測（季節性＋Run-rate、一次性支出不外推）亮燈；傳統月報＝依累計實際 ÷ 累計預算亮燈。格內數字是各自的百分比，門檻與「系統設定」相同。",
-                                        "This system = lights from each month-end's year-end forecast (seasonality + run rate, one-offs not extrapolated); YTD report = lights from actual ÷ budget to date. Cell numbers are each method's percentage; thresholds match Settings."))
+                           hint=tx(f"灰格＝沒亮燈；紅／橘＝超支警示；藍＝執行落後；×＝亮錯燈（和最右欄的年底結果方向相反）。這一年本系統亮錯 {sys_year} 次、傳統月報 {rep_year} 次。",
+                                   f"Grey = no light; red/amber = overspend warning; blue = behind plan; × = wrong light (opposite to the year-end result on the right). This year: {sys_year} wrong lights from this system, {rep_year} from the YTD report."),
+                           help_text=tx("本系統＝依每個月底的年底預測（季節性＋Run-rate、一次性支出不外推）亮燈；傳統月報＝依累計實際 ÷ 累計預算亮燈。兩者使用同一套門檻（系統設定）。滑鼠移到格子上可看當月百分比。",
+                                        "This system = lights from each month-end's year-end forecast (seasonality + run rate, one-offs not extrapolated); YTD report = lights from actual ÷ budget to date. Both use the same thresholds (Settings). Hover a cell for that month's percentage."))
 
                 # 單一部門：本系統預測 vs 傳統月報，逐月對照（年底出問題、或任一方法亮錯燈的部門）
                 focus = summary[(summary.Final_Status != "預算正常") | (summary.System_False > 0) | (summary.Report_False > 0)]
@@ -4332,6 +4422,10 @@ if active_nav_id == "ai_assistant":
                     with st.spinner(tx(f"{ai_provider_label()} 思考中…", f"{ai_provider_label()} is thinking…")):
                         reply, source, notes = llm_answer(conversation, system_context)
                     reply, chart_spec, ai_picked_chart = parse_chart_tag(reply)
+                    requested = share_chart_request(user_input.casefold())
+                    if requested and (not chart_spec or chart_spec["type"] != "share"):
+                        # 使用者明確要環狀圖時，以使用者的要求為準
+                        chart_spec, ai_picked_chart = requested, False
                     check = verify_numbers(reply, facts)
                     if notes and not ai_locked:  # 略過原因屬維運資訊，公開模式不顯示給訪客
                         source += tx("（已自動略過：", " (skipped: ") + "；".join(notes) + tx("）", ")")
