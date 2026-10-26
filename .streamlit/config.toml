@@ -1,4 +1,9 @@
+[server]
+# 本機開發：存檔後瀏覽器自動重新整理，不用手動按 Rerun。
+runOnSave = true
+
 [client]
+# viewer：隱藏開發者選項，但保留右上角選單中的「淺色／深色」主題切換。
 toolbarMode = "viewer"
 showErrorDetails = "none"
 showErrorLinks = false
@@ -9,40 +14,43 @@ baseRadius = "10px"
 showWidgetBorder = true
 showSidebarBorder = true
 
+# 深色主題（預設）。顏色與 app.py 的 PANEL／TEXT 等設計 token 一致，讓原生元件與表格同步配色。
 [theme.dark]
-primaryColor = "#4f9cf9"
-backgroundColor = "#070d1a"
-secondaryBackgroundColor = "#132039"
-textColor = "#e7eefa"
-borderColor = "#1d2c47"
-dataframeBorderColor = "#1d2c47"
-dataframeHeaderBackgroundColor = "#132039"
-redColor = "#f26b6b"
-orangeColor = "#f0a63a"
-blueColor = "#5b9cf0"
-greenColor = "#3fbf7f"
-grayColor = "#93a3b8"
+primaryColor = "#8b8df9"
+backgroundColor = "#0b0d12"
+secondaryBackgroundColor = "#181c25"
+textColor = "#eceef3"
+borderColor = "#252a36"
+dataframeBorderColor = "#252a36"
+dataframeHeaderBackgroundColor = "#181c25"
+redColor = "#f0616d"
+orangeColor = "#f3a83b"
+blueColor = "#3cbfe0"
+greenColor = "#36c48f"
+violetColor = "#b48cf6"
+grayColor = "#8e96a6"
 
 [theme.dark.sidebar]
-backgroundColor = "#0b1424"
-secondaryBackgroundColor = "#132039"
-borderColor = "#1d2c47"
+backgroundColor = "#0e1117"
+secondaryBackgroundColor = "#181c25"
+borderColor = "#252a36"
 
 [theme.light]
-primaryColor = "#2563eb"
-backgroundColor = "#f3f6fb"
-secondaryBackgroundColor = "#eef2f7"
-textColor = "#172133"
-borderColor = "#e1e6ee"
-dataframeBorderColor = "#e1e6ee"
-dataframeHeaderBackgroundColor = "#f6f8fb"
-redColor = "#d63c3c"
-orangeColor = "#c97a10"
-blueColor = "#2f6fd0"
-greenColor = "#1f9a5c"
-grayColor = "#5f6e84"
+primaryColor = "#4f46e5"
+backgroundColor = "#f4f5f8"
+secondaryBackgroundColor = "#eef0f4"
+textColor = "#111827"
+borderColor = "#e2e5eb"
+dataframeBorderColor = "#e2e5eb"
+dataframeHeaderBackgroundColor = "#f8f9fb"
+redColor = "#d6334a"
+orangeColor = "#b76a00"
+blueColor = "#0479a8"
+greenColor = "#118a58"
+violetColor = "#7c3aed"
+grayColor = "#5a6272"
 
 [theme.light.sidebar]
 backgroundColor = "#ffffff"
-secondaryBackgroundColor = "#f6f8fb"
-borderColor = "#e1e6ee"
+secondaryBackgroundColor = "#f4f5f8"
+borderColor = "#e2e5eb"
