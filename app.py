@@ -1840,13 +1840,15 @@ def strip_think(text):
 def openai_compat_chat(base_url, api_key, model, messages, system):
     """Call an OpenAI-compatible /chat/completions endpoint (Groq, OpenRouter …)."""
     payload = {
-        "model": model, "temperature": 0.2, "max_tokens": 1200,
+        "model": model, "temperature": 0.2, "max_tokens": 800,  # Groq 免費版每分鐘總量約 8,000 token，要留給輸入資料
         "messages": [{"role": "system", "content": system}] + [{"role": m["role"], "content": m["content"]} for m in messages],
     }
     request = urllib.request.Request(
         f"{base_url}/chat/completions", data=json.dumps(payload).encode("utf-8"), method="POST",
+        # Groq 前面的 Cloudflare 會擋 Python 預設的 User-Agent（回 403 / 1010），所以要自己帶
         headers={"content-type": "application/json", "authorization": f"Bearer {api_key}",
-                 "http-referer": "https://streamlit.app", "x-title": "Budget Forecast Assistant"},
+                 "http-referer": "https://streamlit.app", "x-title": "Budget Forecast Assistant",
+                 "user-agent": "BudgetForecastAssistant/1.0"},
     )
     with urllib.request.urlopen(request, timeout=60) as response:
         body = json.loads(response.read().decode("utf-8"))
@@ -1856,8 +1858,9 @@ def openai_compat_chat(base_url, api_key, model, messages, system):
 
 # 免費的 OpenAI 相容服務；金鑰只放在 secrets／環境變數，模型名稱可覆寫。
 COMPAT_PROVIDERS = {
-    "groq": ("Groq", "https://api.groq.com/openai/v1", "GROQ_API_KEY", "GROQ_MODEL", "llama-3.3-70b-versatile"),
-    "openrouter": ("OpenRouter", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", "OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free"),
+    # 2026-10 起 Groq 已下架 llama-3.3-70b-versatile、OpenRouter 的 llama-3.3 免費版也停止提供
+    "groq": ("Groq", "https://api.groq.com/openai/v1", "GROQ_API_KEY", "GROQ_MODEL", "openai/gpt-oss-120b"),
+    "openrouter": ("OpenRouter", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", "OPENROUTER_MODEL", "google/gemma-4-31b-it:free"),
 }
 
 @st.cache_data(ttl=12 * 3600, max_entries=300, show_spinner=False)
@@ -2457,8 +2460,28 @@ def provider_cooldowns():
     """Shared across users: services that just hit a free-tier rate limit are skipped for a short while."""
     return {}
 
-def llm_answer(messages, system):
-    """Try each configured free service in order. Returns (text, label used, notes about skipped services)."""
+def compact_ai_facts(facts):
+    """Groq / OpenRouter 免費額度每分鐘 token 較少（Groq 約 8,000）：逐月明細與費用科目只留分析年度，年度彙總仍含所有年度。"""
+    tables = dict(facts["full_database_tables"])
+    year_prefix = f"{facts['fiscal_year']}|"
+    for name in ("monthly_budget_and_actual", "expense_categories_by_year"):
+        lines = tables[name].splitlines()
+        tables[name] = "\n".join(lines[:1] + [line for line in lines[1:] if line.startswith(year_prefix)])
+    tables["unit_note"] += f" 逐月明細與費用科目只附 {facts['fiscal_year']} 年；其他年度請用年度彙總表與 other_fiscal_years_requested。"
+    # 科目異常篩檢與疑似重複明細只給主要模型（Gemini）
+    compact = {k: v for k, v in facts.items() if k not in ("cost_driver_screen_vs_prior_years_same_period", "potential_duplicate_lines")}
+    compact["full_database_tables"] = tables
+    if "other_fiscal_years_requested" in facts:  # 其他年度只留數字與燈號，不附判斷依據
+        compact["other_fiscal_years_requested"] = {
+            year: {**block, "departments": [{k: v for k, v in d.items() if k != "evidence"} for d in block["departments"]]}
+            for year, block in facts["other_fiscal_years_requested"].items()
+        }
+    return compact
+
+def llm_answer(messages, system, compact_system=None):
+    """Try each configured free service in order. Returns (text, label used, notes about skipped services).
+
+    compact_system: smaller prompt for Groq / OpenRouter, whose free tiers cap tokens per minute."""
     notes = []
     payload = json.dumps(messages, ensure_ascii=False)
     cooldowns = provider_cooldowns()
@@ -2466,8 +2489,9 @@ def llm_answer(messages, system):
         if time.time() < cooldowns.get(prov["id"], 0):
             notes.append(tx(f"{prov['label']}：額度暫時用完，稍後自動恢復", f"{prov['label']}: quota temporarily used up"))
             continue
+        prompt = compact_system if compact_system and prov["id"] in COMPAT_PROVIDERS else system
         try:
-            text = cached_completion(prov["id"], prov["model"], prov["endpoint"], system, payload, prov["key"])
+            text = cached_completion(prov["id"], prov["model"], prov["endpoint"], prompt, payload, prov["key"])
             if text.strip():
                 return text, prov["label"], notes
             notes.append(tx(f"{prov['label']} 沒有回傳內容", f"{prov['label']} returned nothing"))
@@ -2743,7 +2767,8 @@ def ai_brief_panel(key):
                 try:
                     facts = build_ai_facts()
                     with st.spinner(tx(f"{ai_provider_label()} 撰寫中…", f"{ai_provider_label()} is writing…")):
-                        raw, source, notes = llm_answer([{"role": "user", "content": prompt}], AI_RULES + json.dumps(facts, ensure_ascii=False))
+                        raw, source, notes = llm_answer([{"role": "user", "content": prompt}], AI_RULES + json.dumps(facts, ensure_ascii=False),
+                                                        AI_RULES + json.dumps(compact_ai_facts(facts), ensure_ascii=False))
                     text = merge_brief(raw).strip()
                     check = verify_numbers(text, facts)
                     if notes and not ai_locked:  # 略過原因屬維運資訊，公開模式不顯示給訪客
@@ -4418,9 +4443,10 @@ if active_nav_id == "ai_assistant":
                     conversation = conversation[1:]
                 facts = build_ai_facts(user_input)
                 system_context = AI_RULES + chat_chart_rules() + json.dumps(facts, ensure_ascii=False)
+                compact_context = AI_RULES + chat_chart_rules() + json.dumps(compact_ai_facts(facts), ensure_ascii=False)
                 try:
                     with st.spinner(tx(f"{ai_provider_label()} 思考中…", f"{ai_provider_label()} is thinking…")):
-                        reply, source, notes = llm_answer(conversation, system_context)
+                        reply, source, notes = llm_answer(conversation, system_context, compact_context)
                     reply, chart_spec, ai_picked_chart = parse_chart_tag(reply)
                     requested = share_chart_request(user_input.casefold())
                     if requested and (not chart_spec or chart_spec["type"] != "share"):
